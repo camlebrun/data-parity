@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent
 IT = ROOT / "integration_tests"
 BIN = os.environ.get("DBT_FUSION") or os.environ.get("DBT_CORE")
 
-pytestmark = pytest.mark.skipif(not BIN, reason="set DBT_FUSION or DBT_CORE to run against real dbt")
+HAS_MACRO = (ROOT / "dbt_package" / "macros" / "reconcile.sql").is_file()
+
+pytestmark = [
+    pytest.mark.skipif(not BIN, reason="set DBT_FUSION or DBT_CORE to run against real dbt"),
+    pytest.mark.skipif(not HAS_MACRO, reason="dbt_package/macros/reconcile.sql is not in this checkout"),
+]
 
 
 def _cli(*argv):

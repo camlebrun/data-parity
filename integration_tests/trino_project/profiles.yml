@@ -1,0 +1,18 @@
+# Trino side of the integration test (needs dbt-core + dbt-trino; Fusion does not support Trino).
+# trino_a / trino_b: the models are views (alias <name>_dpv) over memory.dp_a.* / memory.dp_b.* loaded by ../load_trino.py.
+dp_trino:
+  target: trino_a
+  outputs:
+    trino_a: &base
+      type: trino
+      method: none
+      user: dbt
+      host: localhost
+      port: 18080
+      database: memory
+      schema: dp_a
+      http_scheme: http
+      threads: 1
+    trino_b:
+      <<: *base
+      schema: dp_b

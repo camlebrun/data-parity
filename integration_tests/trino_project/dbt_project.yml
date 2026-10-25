@@ -1,0 +1,8 @@
+name: dp_trino
+profile: dp_trino
+version: "0.1"
+config-version: 2
+model-paths: ["models"]
+models:
+  dp_trino:
+    +materialized: view

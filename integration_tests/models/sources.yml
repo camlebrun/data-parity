@@ -1,0 +1,8 @@
+version: 2
+sources:
+  - name: mart
+    schema: mart
+    tables:
+      - name: orders
+      - name: customers
+      - name: events_nopk

@@ -1,0 +1,13 @@
+# Paths are relative to the cwd of the dbt process: run dbt from integration_tests/
+# (or pass --profiles-dir . --project-dir integration_tests from elsewhere).
+dp_integration:
+  target: engine_a
+  outputs:
+    engine_a:
+      type: duckdb
+      path: data/engine_a.duckdb
+      schema: dp_out
+    engine_b:
+      type: duckdb
+      path: data/engine_b.duckdb
+      schema: dp_out

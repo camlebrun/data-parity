@@ -1,0 +1,19 @@
+version: 2
+models:
+  - name: orders
+    config:
+      tags: [data_parity]
+      event_time: order_date
+    columns:
+      - name: order_id
+        data_tests: [unique]
+  - name: customers
+    config:
+      tags: [data_parity]
+    columns:
+      - name: customer_id
+        data_tests: [unique]
+  - name: events_nopk
+    config:
+      tags: [data_parity]
+      event_time: order_date

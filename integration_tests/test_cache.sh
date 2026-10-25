@@ -42,6 +42,10 @@ $DBT deps >/dev/null 2>&1
 # macro to it. (A macro in the root project cannot call the package's macros.)
 rm -rf dbt_packages/data_parity; mkdir -p dbt_packages
 cp -R "$PKG" dbt_packages/data_parity
+# build the models (views over the source tables) so the copy does not depend on a previous `dbt run`
+for t in engine_a engine_b; do
+  $DBT run --target "$t" >/dev/null 2>&1 || { echo "dbt run failed on $t" >&2; exit 2; }
+done
 cat > dbt_packages/data_parity/macros/ref_pass1.sql <<'EOF'
 {# Independent live reference of pass 1: ONE plain grouped scan per model, no cache code. #}
 {% macro ref_pass1() %}

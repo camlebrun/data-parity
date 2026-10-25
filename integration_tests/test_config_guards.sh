@@ -31,6 +31,8 @@ cd "$W"
 $DBT deps >/dev/null 2>&1
 rm -rf dbt_packages/data_parity; mkdir -p dbt_packages
 cp -R "$PKG" dbt_packages/data_parity
+# build the models (views over the source tables) so the copy does not depend on a previous `dbt run`
+$DBT run --target engine_a >/dev/null 2>&1 || { echo "dbt run failed on engine_a" >&2; exit 2; }
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  PASS  $*"; }

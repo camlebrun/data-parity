@@ -1,0 +1,5 @@
+data/
+target/
+logs/
+dbt_packages/
+dbt_internal_packages/

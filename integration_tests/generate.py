@@ -10,6 +10,10 @@ from pathlib import Path
 
 import duckdb
 
+# Write the files in the oldest storage format DuckDB can produce: a recent DuckDB would otherwise create files
+# that the (older) DuckDB embedded in dbt Fusion cannot open ("database file with version number 999").
+COMPAT = {"storage_compatibility_version": "v1.0.0"}
+
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 A, B = DATA / "engine_a.duckdb", DATA / "engine_b.duckdb"
@@ -150,12 +154,12 @@ def main():
     DATA.mkdir(exist_ok=True)
     for p in DATA.glob("engine_*.duckdb*"):
         p.unlink()
-    con = duckdb.connect(str(A))
+    con = duckdb.connect(str(A), config=COMPAT)
     build_a(con)
     con.execute("checkpoint")
     con.close()
     shutil.copy(A, B)
-    con = duckdb.connect(str(B))
+    con = duckdb.connect(str(B), config=COMPAT)
     f = corrupt_b(con)
     write_findings(con, f)
     con.execute("checkpoint")

@@ -1,0 +1,22 @@
+version: 2
+models:
+  - name: orders
+    config:
+      alias: orders_dpv
+      tags: [data_parity]
+      event_time: order_date
+    columns:
+      - name: order_id
+        data_tests: [unique]
+  - name: customers
+    config:
+      alias: customers_dpv
+      tags: [data_parity]
+    columns:
+      - name: customer_id
+        data_tests: [unique]
+  - name: events_nopk
+    config:
+      alias: events_nopk_dpv
+      tags: [data_parity]
+      event_time: order_date

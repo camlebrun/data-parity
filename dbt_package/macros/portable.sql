@@ -27,15 +27,26 @@
   {%- endif -%}
 {% endmacro %}
 
+{# Key that matches a model across the two sides: meta.data_parity.compare_as, else the model name.
+   It is what the `## ` header, the NOTE lines and `only` use. #}
+{% macro data_parity_rc_key(node, meta) %}
+  {%- set k = meta.get('compare_as') if meta is mapping else none -%}
+  {%- if k is none or k == '' -%}{{ return(node.name) }}{%- endif -%}
+  {%- do data_parity_rc_check_part(k, node.name ~ ': meta.data_parity.compare_as') -%}
+  {{- return(k | string) -}}
+{% endmacro %}
+
 {# NB: the argument is not called `namespace`: that would hide Jinja's namespace() inside the calling macro.
    Relation read for `node` on this target, in this order:
-     1. relations[node.name]   '[database.]schema.table'
+     1. relations[node.name] (or relations[<its match key>])   '[database.]schema.table'
      2. namespace              '[database.]schema', table = identifier of the model's own ref()
      3. ref(node.name)
    A one-part namespace / two-part mapping keeps the database of the model's own relation. #}
 {% macro data_parity_rc_relation(node, base, rel_namespace, relations) %}
   {%- set rels = relations if relations is mapping else {} -%}
+  {%- set meta = (node.config.meta or {}).get('data_parity') -%}
   {%- set mapped = rels.get(node.name) -%}
+  {%- if mapped is none -%}{%- set mapped = rels.get(data_parity_rc_key(node, meta)) -%}{%- endif -%}
   {%- if mapped is none and not rel_namespace -%}{{ return(base) }}{%- endif -%}
   {%- if mapped is not none -%}
     {%- set parts = (mapped | string).split('.') -%}
@@ -65,7 +76,7 @@
   {%- for e in data_parity_cfg_list(exclude_columns, 'exclude_columns', []) -%}
     {%- if '.' in e -%}
       {%- set model = e.split('.')[0] -%}
-      {%- if model == node.name -%}{%- do cols.append(data_parity_norm_name(e[(model | length) + 1:]) | trim) -%}{%- endif -%}
+      {%- if model == node.name or model == data_parity_rc_key(node, meta) -%}{%- do cols.append(data_parity_norm_name(e[(model | length) + 1:]) | trim) -%}{%- endif -%}
     {%- else -%}
       {%- do cols.append(data_parity_norm_name(e) | trim) -%}
     {%- endif -%}

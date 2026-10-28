@@ -19,11 +19,15 @@
                                     partitions (N integer >= 1) or to an explicit non-empty list; prints a
                                     scope| line. Any other shape, or a selection of 0 partitions while the
                                     table has some, is a compiler error
+    rel_namespace  '[db.]schema'    read the model's table in this schema instead of ref() (symmetric, per side)
+    relations      {model: '[db.]schema.table'}   table read for a model; wins over rel_namespace
+    exclude_columns / exclude_prefixes / no_default_exclude   extra exclusions (`col` or `model.col`), see portable.sql
 
   Models: tagged `data_parity` or with config.meta.data_parity. meta.data_parity keys:
     partition_column (else config.event_time), primary_key (str or list; else inferred from a `unique`
     or dbt_utils.unique_combination_of_columns test), exclude_columns, exclude_prefixes [default meta_]
-    (both: a string or a list of strings; an empty prefix is an error), enabled.
+    (both: a string or a list of strings; an empty prefix is an error), compare_as (the key that matches the
+    model with the one of the other side, default the model name; printed in the `## ` line), enabled.
     Opt out with `meta: {data_parity: false}` or `meta: {data_parity: {enabled: false}}`.
 
   Output (every line starts with PARITY|), per model, sorted:
@@ -34,6 +38,7 @@
     buckets|<N>                          (before the first bucket/col line)
     bucket|<p>|<b>|rows=|h1=|h2=         (pass 2)
     col|<p>|<b>|<column>|rows=|h1=|h2=   (pass 3)
+  A model whose table does not exist on this side prints `## <key>` then `absent|<relation>` only.
   Without partition column, <p> is `*` (pass 1 prints the table line only). In pass 3 a bucket `*` means
   "the whole partition" (used for models without pk, see docs/runbook.md).
   NOTE| lines (not PARITY|) are informational: NOTE|<model>|excluded=<columns>.
@@ -128,11 +133,18 @@
   {%- set only = data_parity_cfg_list(only, 'only', none) -%}
   {%- set models = [] -%}
   {%- set tagged = [] -%}
+  {%- set owner = {} -%}
   {%- for node in graph.nodes.values() if node.resource_type == 'model' -%}
     {%- set meta = (node.config.meta or {}).get('data_parity') -%}
     {%- if (meta is not none or 'data_parity' in node.tags) and not data_parity_meta_disabled(meta) -%}
+      {%- set key = data_parity_rc_key(node, meta) -%}
+      {%- if key in owner -%}
+        {{ exceptions.raise_compiler_error("data_parity: models '" ~ owner[key] ~ "' and '" ~ node.name ~ "' have the same match key '" ~ key ~ "' (meta.data_parity.compare_as) on this side") }}
+      {%- endif -%}
+      {%- do owner.update({key: node.name}) -%}
       {%- do tagged.append(node.name) -%}
-      {%- if only is none or node.name in only -%}
+      {%- if key != node.name -%}{%- do tagged.append(key) -%}{%- endif -%}
+      {%- if only is none or node.name in only or key in only -%}
         {%- do models.append(node) -%}
       {%- endif -%}
     {%- endif -%}
@@ -218,9 +230,13 @@
     {% set cols = [] %}
     {% set seen = {} %}
     {% set live_cols = adapter.get_columns_in_relation(rel) %}
+    {% set key = data_parity_rc_key(node, meta) %}
+    {# no such table on this side: reported as `absent|<relation>`; the CLI turns it into "only on the other side"
+       (or an error when no model of this side has a table: wrong namespace / mapping) #}
     {% if live_cols | length == 0 %}
-      {% do exceptions.raise_compiler_error('data_parity_reconcile: ' ~ node.name ~ ': relation ' ~ rel ~ ' not found or has no columns on target ' ~ target.name ~ ' (check namespace / relations, or run dbt for this target)') %}
-    {% endif %}
+      {% do out.append('PARITY|## ' ~ key) %}
+      {% do out.append('PARITY|absent|' ~ rel) %}
+    {% else %}
     {% for c in live_cols %}
       {% set n = data_parity_norm_name(c.name) | trim %}
       {% if n in seen %}
@@ -272,8 +288,8 @@
       {% set asof_pred = '(' ~ pinfo['lhs'] ~ ' < cast(' ~ (data_parity_rc_lit(as_of) | trim) ~ ' as ' ~ pinfo['sqltype'] ~ '))' %}
     {% endif %}
 
-    {% do out.append('PARITY|## ' ~ node.name) %}
-    {% do out.append('NOTE|' ~ node.name ~ '|excluded=' ~ (excluded | sort | join(',') if excluded | length > 0 else 'none')) %}
+    {% do out.append('PARITY|## ' ~ key) %}
+    {% do out.append('NOTE|' ~ key ~ '|excluded=' ~ (excluded | sort | join(',') if excluded | length > 0 else 'none')) %}
     {% set colparts = [] %}
     {% for c in cols %}{% do colparts.append(c['lname'] ~ ':' ~ c['cls']) %}{% endfor %}
     {% do out.append('PARITY|cols|' ~ colparts | join(',')) %}
@@ -393,6 +409,7 @@
         {% endfor %}
       {% endfor %}
       {% for l in col_lines %}{% do out.append(l) %}{% endfor %}
+    {% endif %}
     {% endif %}
   {% endfor %}
 

@@ -125,6 +125,36 @@ Options utiles : `--dbt-a` / `--dbt-b` (binaire dbt de chaque côté, ex. Fusion
 data-parity run --a duck --b trino --dbt-a dbt-fusion --dbt-b dbt-core --project-b ./projet_trino --profiles-dir-b ./projet_trino
 ```
 
+**Projets sans Jinja multi-moteur** (un repo dbt ordinaire par moteur, ou un seul repo lancé sur deux cibles). Le
+projet n'a besoin d'aucun `target.type`, d'aucun `adapter.dispatch` : seulement le package `data_parity`, le tag
+(ou `meta.data_parity`) et des tables déjà construites. Les modèles sont lus (parsés) sur chaque cible, jamais
+compilés ni exécutés sur l'autre moteur. La table lue pour un modèle, côté par côté : l'entrée du fichier de mapping
+(`--mapping-a/b`, lignes `modele: [catalogue.]schema.table`), sinon le schéma du côté (`--schema-a/b`, `[catalogue.]schema`)
+avec le nom de table du modèle, sinon le `ref()` du projet. Rien n'est codé en dur.
+
+```text
+# un repo BigQuery (côté A = cible de la migration) comparé à Trino (côté B = legacy, par défaut)
+data-parity run --a bq --b trino --dbt-b dbt-core --schema-b <catalogue>.<schema> --label-a bigquery --label-b trino
+# deux projets indépendants
+data-parity run --a dev --b dev --project ./a --project-b ./b
+```
+
+- **Appariement** : par `meta.data_parity.compare_as` s'il existe, sinon par nom (`orders_dpv` avec `compare_as: orders`
+  est comparé à `orders`). Deux modèles d'un même côté avec la même clé : erreur qui nomme les deux.
+- **Modèle d'un seul côté** (ou sans table d'un côté) : un constat, code 1, `only_in_a` / `only_in_b` dans `parity.json`,
+  formulé selon le rôle (`--legacy a|b`, défaut `b`) : « only in the legacy side (not migrated yet) » ou « only in the
+  target side (no legacy counterpart) ». Si AUCUN modèle d'un côté n'a de table, le schéma ou le mapping est faux : code 2
+  avec le nom de l'option à corriger.
+- **Écart de schéma** : si les colonnes comparées (après exclusions) diffèrent, le modèle est un `schema mismatch` qui nomme
+  les colonnes de chaque côté, pas un écart de données.
+- **Noms de colonnes** rapprochés en minuscules, tout caractère hors `[a-z0-9_]` devenant `_` : `order/id` (Trino) et
+  `order_id` (BigQuery) sont la même colonne et donnent le même hash. Deux colonnes d'un côté qui se confondent : erreur.
+- **Exclusions** : `--exclude-column col|modele.col`, `--exclude-prefix` (répétables), en plus de `meta.data_parity` ;
+  `meta_` est toujours exclu, sauf `--no-default-exclude`.
+- **Table sans colonne de partition** : comparée entière ; `--last` et `--as-of` ne s'y appliquent pas, le rapport le dit.
+- **Échecs dbt** nommés par côté avec la cause et le correctif : package absent (`dbt deps`), projet qui ne parse pas
+  (fichier et ligne), `ref` introuvable, cible ou profil inconnu.
+
 **Codes de sortie** : 0 = identique, 1 = différences, 2 = erreur (échec dbt d'un côté, cible ou modèle inconnu,
 mauvais usage). Une erreur ne donne jamais 0 ni 1. Un périmètre partiel (`--last`, `--as-of`, partitions non
 descendues) donne 0 avec le verdict « ISO on the checked scope » et `scope_limited: true` dans le JSON : ce n'est

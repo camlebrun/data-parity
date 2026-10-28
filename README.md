@@ -74,6 +74,10 @@ The last command finds 5 differing days in `orders`, 1 column in `customers` and
 | `--dbt-a BIN`, `--dbt-b BIN` | dbt binary per side (default `dbt`); Trino needs dbt-core, DuckDB can use Fusion |
 | `--project DIR`, `--project-b DIR` | dbt project directory (default: current directory); side B's, if different |
 | `--profiles-dir-a DIR`, `--profiles-dir-b DIR` | dbt profiles directory per side |
+| `--schema-a [DB.]SCHEMA`, `--schema-b [DB.]SCHEMA` | read each model's table in this schema on that side instead of the project's own `ref()` (see [Plain single-engine projects](#plain-single-engine-projects)) |
+| `--mapping-a FILE`, `--mapping-b FILE` | file of `model: [db.]schema.table` lines: the table read for a model on that side; wins over `--schema-*` |
+| `--exclude-column COL\|MODEL.COL`, `--exclude-prefix PREFIX` | columns left out on both sides (repeatable), added to `meta.data_parity`; `meta_` is always excluded unless `--no-default-exclude` |
+| `--legacy a\|b`, `--label-a TEXT`, `--label-b TEXT` | which side is the legacy one (default `b`) and the side names shown in the report |
 | `--as-of YYYY-MM-DD` | exclude partitions on or after this date, and NULL partitions, on both sides (a freshness gap is not a content gap) |
 | `--last N` | only the N latest partitions of each model (bounds the scan cost) |
 | `--buckets N` | hash buckets per partition (default 256) |
@@ -85,6 +89,37 @@ The last command finds 5 differing days in `orders`, 1 column in `customers` and
 `data-parity report RUN_DIR [--out FILE]` re-renders `parity.md` from a saved run directory (`parity.json`, `p1_A.txt`, `p1_B.txt`) without calling dbt; exit 2 if they are missing. A run made by an older version holds an oldest-N sample, so its re-rendered "spread evenly" sentence is inaccurate: only a fresh run gives a real sample.
 
 `.data-parity.env` holds `A=`, `B=` and `PROJECT_B=` only (parsed, never executed; binaries are never read from it).
+
+### Plain single-engine projects
+
+The dbt project needs no `target.type` branch, no `adapter.dispatch` and no wiring shared with the other engine: only the
+`data_parity` package, the opt-in (tag or `meta.data_parity`) and tables that are already built. Models are only parsed
+on each target, never compiled or run on the foreign one.
+
+The table read for a model on one side is, in this order: the side's mapping file entry, the side's namespace
+(`--schema-a` / `--schema-b`, `[database.]schema`, with the model's own table name), then the project's own `ref()`.
+Nothing is hard-coded: a side that reads the repo's own relations needs no option.
+
+```text
+# one BigQuery repo; side B is Trino, whose tables live in <catalog>.<schema> (legacy side, the default)
+data-parity run --a bq --b trino --dbt-b dbt-core --schema-b <catalog>.<schema> --label-a bigquery --label-b trino
+# two independent projects
+data-parity run --a dev --b dev --project ./a --project-b ./b
+```
+
+- **Matching**: models are matched across sides by `meta.data_parity.compare_as` when set, else by name, so `orders_dpv`
+  with `compare_as: orders` is compared with `orders`. Two models of one side with the same key are an error.
+- **One-sided models** (opted in on one side only, or with no table on one side) are findings, not errors: exit 1,
+  `only_in_a` / `only_in_b` in `parity.json`, worded by role (`--legacy`): "only in the legacy side (not migrated yet)"
+  or "only in the target side (no legacy counterpart)". If NO model of a side has a table, the namespace or mapping is
+  wrong and the run ends with exit 2 naming the option.
+- **Schema mismatch**: when the compared column sets (after exclusions) differ, the model is a `schema mismatch` naming
+  the columns of each side (`schema_mismatch`, `columns_only_a` / `columns_only_b` in the JSON), not a data difference.
+- **Column names** are matched lower-cased with every character outside `[a-z0-9_]` replaced by `_`: Trino `order/id`
+  and BigQuery `order_id` are the same column and hash the same. Two columns of one side that collide are an error.
+- **Tables without a partition column** are compared whole; `--last` / `--as-of` do not apply to them and the report says so.
+- **dbt failures** are named by side with the cause and the fix: package missing (`dbt deps`), project that does not
+  parse (file and line), unresolvable `ref`, unknown target or profile.
 
 ### Exit codes
 

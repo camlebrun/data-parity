@@ -44,29 +44,44 @@
 {% endmacro %}
 
 {# Models to process, with everything derived from the live schema. #}
-{% macro data_parity_cache_models(only) %}
+{% macro data_parity_cache_models(only, rel_namespace=none, relations=none, exclude_columns=none, exclude_prefixes=none, no_default_exclude=false) %}
   {% set only = data_parity_cfg_list(only, 'only', none) %}
   {% set out = [] %}
   {% set tagged = [] %}
+  {% set owner = {} %}
   {% for node in graph.nodes.values() if node.resource_type == 'model' %}
     {% set meta = (node.config.meta or {}).get('data_parity') %}
+    {% set key = data_parity_rc_key(node, meta) %}
     {% if (meta is not none or 'data_parity' in node.tags) and not data_parity_meta_disabled(meta) %}
+      {% if key in owner %}
+        {% do exceptions.raise_compiler_error("data_parity: models '" ~ owner[key] ~ "' and '" ~ node.name ~ "' have the same match key '" ~ key ~ "' (meta.data_parity.compare_as) on this side") %}
+      {% endif %}
+      {% do owner.update({key: node.name}) %}
       {% do tagged.append(node.name) %}
+      {% if key != node.name %}{% do tagged.append(key) %}{% endif %}
     {% endif %}
     {% if (meta is not none or 'data_parity' in node.tags) and not data_parity_meta_disabled(meta)
-          and (only is none or node.name in only) %}
+          and (only is none or node.name in only or key in only) %}
       {% set meta = meta if meta is mapping else {} %}
-      {% set rel = ref(node.name) %}
-      {% set excl_c = data_parity_cfg_list(meta.get('exclude_columns'), node.name ~ ': meta.data_parity.exclude_columns', []) | map('lower') | list %}
-      {% set excl_p = data_parity_cfg_list(meta.get('exclude_prefixes'), node.name ~ ': meta.data_parity.exclude_prefixes', ['meta_']) %}
+      {% set rel = data_parity_rc_relation(node, ref(node.name), rel_namespace, relations) %}
+      {% set excl = data_parity_rc_exclusions(node, meta, exclude_columns, exclude_prefixes, data_parity_cfg_bool(no_default_exclude, 'no_default_exclude')) %}
+      {% set excl_c = excl['cols'] %}
+      {% set excl_p = excl['prefixes'] %}
       {% set excluded = [] %}
-      {% set part_col = meta.get('partition_column') or node.config.get('event_time') %}
+      {% set part_col = data_parity_norm_name(meta.get('partition_column') or node.config.get('event_time') or '') | trim %}
       {% set bq = (target.type == 'bigquery') %}
       {% set by_name = {} %}
-      {% for c in adapter.get_columns_in_relation(rel) %}
-        {% set n = c.name | lower %}
+      {% set live_cols = adapter.get_columns_in_relation(rel) %}
+      {% if live_cols | length == 0 %}
+        {% do exceptions.raise_compiler_error("data_parity cache: " ~ node.name ~ ": relation " ~ rel ~ " not found or has no columns on target " ~ target.name ~ " (check rel_namespace / relations)") %}
+      {% endif %}
+      {% for c in live_cols %}
+        {% set n = data_parity_norm_name(c.name) | trim %}
+        {% if n in by_name %}
+          {% do exceptions.raise_compiler_error("data_parity cache: " ~ node.name ~ ": columns '" ~ by_name[n]['name'] ~ "' and '" ~ c.name ~ "' are the same column once normalized (" ~ n ~ ")") %}
+        {% endif %}
         {% set skip = namespace(value = n in excl_c) %}
-        {% for p in excl_p %}{% if n.startswith(p | lower) %}{% set skip.value = true %}{% endif %}{% endfor %}
+        {% for p in excl_p %}{% if n.startswith(p) %}{% set skip.value = true %}{% endif %}{% endfor %}
         {% if not skip.value %}
           {% do by_name.update({n: {'name': c.name, 'data_type': c.data_type, 'cls': data_parity_type_class(c.data_type, bq) | trim}}) %}
         {% else %}
@@ -82,7 +97,7 @@
       {% set cols_line = pieces | join(',') %}
       {% set pexpr = none %}
       {% if part_col %}
-        {% set pc = by_name.get(part_col | lower) %}
+        {% set pc = by_name.get(part_col) %}
         {% if pc is none %}
           {% do exceptions.raise_compiler_error("data_parity cache: partition column '" ~ part_col ~ "' not found (or excluded) in " ~ node.name) %}
         {% endif %}
@@ -91,7 +106,7 @@
       {% endif %}
       {# schema fingerprint: columns + types classes + canonical form version #}
       {% set fp = data_parity_cache_md5('spec1;' ~ cols_line) %}
-      {% do out.append({'name': node.name, 'rel': rel, 'cols': cols, 'cols_line': cols_line, 'pexpr': pexpr, 'schema_fp': fp, 'node': node, 'meta': meta, 'excluded': excluded | sort | join(',')}) %}
+      {% do out.append({'name': key, 'rel': rel, 'cols': cols, 'cols_line': cols_line, 'pexpr': pexpr, 'schema_fp': fp, 'node': node, 'meta': meta, 'excluded': excluded | sort | join(',')}) %}
     {% endif %}
   {% endfor %}
   {% if only is not none %}
@@ -176,14 +191,14 @@
 
 {# ---------------------------------------------------------------- 1. refresh #}
 
-{% macro data_parity_cache_refresh(only=none, lag_days=3, reference_date=none, schema=none, write=false) %}
+{% macro data_parity_cache_refresh(only=none, lag_days=3, reference_date=none, schema=none, write=false, rel_namespace=none, relations=none, exclude_columns=none, exclude_prefixes=none, no_default_exclude=false) %}
   {% if not execute %}{{ return('') }}{% endif %}
   {% set write = data_parity_cfg_bool(write, 'write') %}
   {% set schema = data_parity_cache_resolve_schema(schema, write) %}
   {% set cutoff = data_parity_cache_cutoff(reference_date, lag_days) %}
   {% set out = [] %}
   {% do out.append('NOTE|refresh|mode=' ~ ('WRITE' if write else 'DRY RUN (write=false, nothing is created or modified)') ~ '|cutoff=' ~ cutoff ~ '|lag_days=' ~ lag_days ~ '|schema=' ~ schema ~ '|version=' ~ data_parity_cache_version()) %}
-  {% for m in data_parity_cache_models(only) %}
+  {% for m in data_parity_cache_models(only, rel_namespace, relations, exclude_columns, exclude_prefixes, no_default_exclude) %}
     {% if not m['pexpr'] %}
       {% do out.append('NOTE|refresh|' ~ m['name'] ~ '|no partition column: nothing to cache') %}
     {% else %}
@@ -222,7 +237,7 @@
 
 {# ---------------------------------------------------------------- 2. cached pass 1 #}
 
-{% macro data_parity_cached_pass1(only=none, lag_days=3, reference_date=none, schema=none, as_of=none, partitions=none) %}
+{% macro data_parity_cached_pass1(only=none, lag_days=3, reference_date=none, schema=none, as_of=none, partitions=none, rel_namespace=none, relations=none, exclude_columns=none, exclude_prefixes=none, no_default_exclude=false) %}
   {% if not execute %}{{ return('') }}{% endif %}
   {% if as_of is not none or partitions is not none %}
     {% do exceptions.raise_compiler_error("data_parity_cached_pass1 does not support as_of / partitions (they only exist in data_parity_reconcile); the cache serves whole closed partitions") %}
@@ -230,7 +245,7 @@
   {% set schema = data_parity_cache_resolve_schema(schema, true) %}
   {% set cutoff = data_parity_cache_cutoff(reference_date, lag_days) %}
   {% set out = [] %}
-  {% for m in data_parity_cache_models(only) %}
+  {% for m in data_parity_cache_models(only, rel_namespace, relations, exclude_columns, exclude_prefixes, no_default_exclude) %}
     {% set notes = [] %}
     {% set parts = {} %}
     {% if m['pexpr'] %}
@@ -275,7 +290,7 @@
 {# ---------------------------------------------------------------- 4. verify #}
 
 {# Recompute `sample` random cached (trusted, closed as of cutoff) partitions live and compare with the cache. #}
-{% macro data_parity_cache_verify(only=none, sample=5, schema=none, fail_on_stale=true, lag_days=3, reference_date=none) %}
+{% macro data_parity_cache_verify(only=none, sample=5, schema=none, fail_on_stale=true, lag_days=3, reference_date=none, rel_namespace=none, relations=none, exclude_columns=none, exclude_prefixes=none, no_default_exclude=false) %}
   {% if not execute %}{{ return('') }}{% endif %}
   {% set fail_on_stale = data_parity_cfg_bool(fail_on_stale, 'fail_on_stale') %}
   {% set schema = data_parity_cache_resolve_schema(schema, true) %}
@@ -283,7 +298,7 @@
   {% set version = data_parity_cache_version() %}
   {% set out = [] %}
   {% set bad = namespace(n=0) %}
-  {% for m in data_parity_cache_models(only) %}
+  {% for m in data_parity_cache_models(only, rel_namespace, relations, exclude_columns, exclude_prefixes, no_default_exclude) %}
     {% if m['pexpr'] %}
       {% set tbl = adapter.get_relation(database=target.database, schema=schema, identifier='data_parity_cache') %}
       {% if tbl is none %}

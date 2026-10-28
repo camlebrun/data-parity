@@ -259,12 +259,40 @@ def not_checked(r: RunResult) -> List[str]:
     if skipped:
         out.append("**Row-level comparison skipped** for %s: structure differs, hashes are not comparable."
                    % ", ".join("`%s`" % s for s in skipped))
+    whole = [m.name for m in r.models if m.verdict != "structure" and not m.partitioned]
+    if whole and (o.last is not None or o.as_of):
+        out.append("**No partition scope applies** to %s (no partition column): `--last` and `--as-of` do not apply to them, "
+                   "they are compared as whole tables." % ", ".join("`%s`" % n for n in whole))
     ex = [(m.name, m.excluded) for m in r.models if m.excluded and m.excluded != "none"]
     if ex:
         out.append("**Excluded columns** (by configuration, `meta.data_parity`): "
                    + "; ".join("`%s`: %s" % (n, ", ".join("`%s`" % c for c in e.split(",") if c)) for n, e in ex) + ".")
     out.append("**Untagged models**: only models tagged `data_parity` (or with `meta.data_parity`) are part of the comparison.")
     return out
+
+
+def _structure_word(m: ModelResult, r: RunResult) -> str:
+    if m.structure_kind in ("only_a", "only_b"):
+        side = "A" if m.structure_kind == "only_a" else "B"
+        return "only in %s" % r.role(side)
+    return "schema mismatch" if m.structure_kind == "schema" else "structure"
+
+
+def _structure_section(m: ModelResult, r: RunResult) -> List[str]:
+    la, lb = r.label_a, r.label_b
+    if m.structure_kind in ("only_a", "only_b"):
+        return ["Model `%s` is %s." % (m.name, r.one_sided_text(m)), "",
+                "It was found on one side only (matched by its name, or by `meta.data_parity.compare_as`), so there is nothing to compare.", ""]
+    out: List[str] = []
+    if m.cols_only_a:
+        out.append("- columns only in %s: %s" % (la, ", ".join("`%s`" % c for c in m.cols_only_a)))
+    if m.cols_only_b:
+        out.append("- columns only in %s: %s" % (lb, ", ".join("`%s`" % c for c in m.cols_only_b)))
+    for t in m.cols_type_diff:
+        out.append("- type class differs: %s" % t.replace("A:", la + ":", 1).replace("B:", lb + ":", 1))
+    if out:
+        out.append("")
+    return out + ["Structure lines that differ (`cols`, `pk`, `scope`, `note`):", "", "```"] + m.structure_diff + ["```", ""]
 
 
 def _overview(r: RunResult) -> List[str]:
@@ -276,7 +304,7 @@ def _overview(r: RunResult) -> List[str]:
             v, pdiff = ("\u26a0\ufe0f identical on scope" if r.options.scope_limited and m.partitioned else "\u2705 identical"), ("0/%s" % "{:,}".format(m.partitions_total)) if m.partitioned else "-"
             cols = "-"
         elif m.verdict == "structure":
-            v, pdiff, cols = "\u274c structure", "-", "-"
+            v, pdiff, cols = "\u274c " + _structure_word(m, r), "-", "-"
         else:
             v = "\u274c differs"
             if m.parts:
@@ -319,11 +347,13 @@ def inline_parts(ordered: List[PartDiff], limit: int) -> List[PartDiff]:
 def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str]:
     la, lb = r.label_a, r.label_b
     out = ["### \u274c `%s`" % m.name, ""]
-    out.append("> %s" % diagnosis(m, la, lb))
+    if m.structure_kind in ("only_a", "only_b"):
+        out.append("> %s." % r.one_sided_text(m).capitalize())
+    else:
+        out.append("> %s" % diagnosis(m, la, lb))
     out.append("")
     if m.verdict == "structure":
-        out += ["Structure lines that differ (`cols`, `pk`, `scope`, `note`):", "", "```"] + m.structure_diff + ["```", ""]
-        return out
+        return out + _structure_section(m, r)
     facts = ["rows: %s = %s, %s = %s (\u0394 %s)" % (la, num(m.rows_a), lb, num(m.rows_b), signed(m.delta)),
              "primary key: %s" % ("none (buckets come from the full-row hash)" if m.pk == "none" else "`%s`" % m.pk)]
     if m.parts:
@@ -478,7 +508,14 @@ def terminal_summary(r: RunResult) -> List[str]:
                 out.append("%-24s ISO   (%s rows identical)" % (m.name, num(m.rows_a)))
             continue
         if m.verdict == "structure":
-            out.append("%-24s DIFF  structure (columns, types, key or scope) differs: see the report" % m.name)
+            if m.structure_kind in ("only_a", "only_b"):
+                out.append("%-24s DIFF  %s" % (m.name, r.one_sided_text(m)))
+            elif m.structure_kind == "schema" and (m.cols_only_a or m.cols_only_b):
+                bits = ["only in %s: %s" % (la, ", ".join(m.cols_only_a))] if m.cols_only_a else []
+                bits += ["only in %s: %s" % (lb, ", ".join(m.cols_only_b))] if m.cols_only_b else []
+                out.append("%-24s DIFF  schema mismatch (%s)" % (m.name, "; ".join(bits)))
+            else:
+                out.append("%-24s DIFF  structure (columns, types, key or scope) differs: see the report" % m.name)
             continue
         out.append("%-24s DIFF" % m.name)
         if m.delta == 0:

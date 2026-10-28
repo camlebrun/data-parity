@@ -9,6 +9,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -86,6 +87,28 @@ def _as_of(text: str) -> str:
     return text
 
 
+def _namespace(text: str) -> str:
+    # same rule as the macros (data_parity_rc_check_part): [database.]schema, no quote / backslash / space
+    parts = text.strip().split(".")
+    if not 1 <= len(parts) <= 2 or not all(re.match(r"^[A-Za-z0-9_-]+$", x) for x in parts):
+        raise argparse.ArgumentTypeError("expected [database.]schema (letters, digits, _ and -), got %r" % text)
+    return text.strip()
+
+
+def _exclude_column(text: str) -> str:
+    v = text.strip()
+    if not v or v.startswith(".") or v.endswith(".") or "'" in v or '"' in v or "\\" in v:
+        raise argparse.ArgumentTypeError("expected COLUMN or MODEL.COLUMN, got %r" % text)
+    return v
+
+
+def _exclude_prefix(text: str) -> str:
+    v = text.strip()
+    if not v or "'" in v or '"' in v or "\\" in v:
+        raise argparse.ArgumentTypeError("expected a non-empty column prefix, got %r" % text)
+    return v
+
+
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--a", metavar="TARGET", help="dbt target of side A")
     p.add_argument("--b", metavar="TARGET", help="dbt target of side B")
@@ -95,6 +118,10 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project-b", metavar="DIR", help="dbt project directory of side B (default: same as --project)")
     p.add_argument("--profiles-dir-a", metavar="DIR", help="dbt profiles directory of side A")
     p.add_argument("--profiles-dir-b", metavar="DIR", help="dbt profiles directory of side B")
+    p.add_argument("--schema-a", type=_namespace, metavar="[DB.]SCHEMA",
+                   help="read the tables of side A in this schema instead of the project's own ref() (a mapping entry still wins)")
+    p.add_argument("--schema-b", type=_namespace, metavar="[DB.]SCHEMA",
+                   help="same for side B (e.g. the legacy Trino schema of a BigQuery repo)")
     p.add_argument("--out", metavar="DIR", help="work directory; a fresh run-<timestamp> sub-directory is created inside")
 
 
@@ -109,6 +136,11 @@ def build_parser(cmd: str) -> argparse.ArgumentParser:
         p.add_argument("--buckets", type=_pos_int, default=256, metavar="N", help="hash buckets per partition (default 256)")
         p.add_argument("--drill-limit", type=_pos_int, default=200, metavar="N", help="max partitions drilled per model (default 200)")
         p.add_argument("--detail", type=_detail, default=15, metavar="N|all", help="partitions listed inline in the report (default and maximum 15)")
+        p.add_argument("--exclude-column", type=_exclude_column, action="append", default=[], metavar="COL|MODEL.COL",
+                       help="column left out of the comparison, in every model or only in MODEL (repeatable)")
+        p.add_argument("--exclude-prefix", type=_exclude_prefix, action="append", default=[], metavar="PREFIX",
+                       help="columns starting with PREFIX are left out (repeatable; `meta_` is always excluded unless --no-default-exclude)")
+        p.add_argument("--no-default-exclude", action="store_true", help="also compare the `meta_` columns")
         p.add_argument("--report", metavar="FILE", help="Markdown report path")
         p.add_argument("--json", metavar="FILE", help="machine-readable result path")
     return p
@@ -170,8 +202,8 @@ def _resolve(args: argparse.Namespace, parser: argparse.ArgumentParser, cmd: str
             raise ParityError("no dbt_project.yml in %s (run from your dbt project or use --project)" % d)
     prof_a = Path(args.profiles_dir_a).resolve() if args.profiles_dir_a else None
     prof_b = Path(args.profiles_dir_b).resolve() if args.profiles_dir_b else None
-    sa = Side("A", a, a, args.dbt_a, project, prof_a)
-    sb = Side("B", b, b, args.dbt_b, project_b, prof_b)
+    sa = Side("A", a, a, args.dbt_a, project, prof_a, args.schema_a)
+    sb = Side("B", b, b, args.dbt_b, project_b, prof_b, args.schema_b)
     base = Path(args.out).resolve() if args.out else Path(tempfile.gettempdir()) / "data-parity" / project.name
     return sa, sb, base
 
@@ -180,13 +212,21 @@ def _command_line(cmd: str, args: argparse.Namespace, models: List[str]) -> str:
     argv = ["data-parity", cmd] + models + ["--a", args.a or "", "--b", args.b or ""]
     pairs = [("--dbt-a", args.dbt_a, "dbt"), ("--dbt-b", args.dbt_b, "dbt"), ("--project", args.project, None),
              ("--project-b", args.project_b, None), ("--profiles-dir-a", args.profiles_dir_a, None),
-             ("--profiles-dir-b", args.profiles_dir_b, None)]
+             ("--profiles-dir-b", args.profiles_dir_b, None), ("--schema-a", args.schema_a, None),
+             ("--schema-b", args.schema_b, None)]
     if cmd == "run":
         pairs += [("--as-of", args.as_of, None), ("--last", args.last, None), ("--buckets", args.buckets, 256),
                   ("--drill-limit", args.drill_limit, 200), ("--detail", "all" if args.detail is None else args.detail, 15)]
     for flag, val, default in pairs:
         if val is not None and val != default:
             argv += [flag, str(val)]
+    if cmd == "run":
+        for col in args.exclude_column:
+            argv += ["--exclude-column", col]
+        for pre in args.exclude_prefix:
+            argv += ["--exclude-prefix", pre]
+        if args.no_default_exclude:
+            argv.append("--no-default-exclude")
     return join_command(argv)
 
 
@@ -203,7 +243,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 models.append(piece)
     args.a, args.b = sa.target, sb.target
     opts = Options(models=models, buckets=args.buckets, as_of=args.as_of, last=args.last,
-                   drill_limit=args.drill_limit, detail=args.detail)
+                   drill_limit=args.drill_limit, detail=args.detail, exclude_columns=list(args.exclude_column),
+                   exclude_prefixes=list(args.exclude_prefix), no_default_exclude=args.no_default_exclude)
     try:
         run_dir = make_run_dir(base)
     except OSError as exc:

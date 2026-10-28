@@ -1,6 +1,8 @@
 """End-to-end behaviour of the CLI against the fake dbt: exit codes, failure paths, scopes, files."""
 import json
 
+import pytest
+
 from conftest import base_models, mutate
 
 RUN = ["run", "--a", "ta", "--b", "tb"]
@@ -253,6 +255,48 @@ def test_last_and_as_of_text(env):
     two_sides(env)
     r = env.run(*RUN, "--last", "3", "--as-of", "2025-01-06")
     assert "(last 3 partitions / before 2025-01-06)" in r.out
+
+
+def test_schema_per_side_and_exclusions_are_sent_to_the_macro(env):
+    two_sides(env)
+    r = env.run(*RUN, "--schema-a", "ds_a", "--schema-b", "cat.sch_b", "--exclude-column", "amount",
+                "--exclude-column", "orders.status", "--exclude-prefix", "tmp_", "--no-default-exclude")
+    assert r.rc == 0, r.err
+    a, b = env.call_args()[:2]
+    assert a["rel_namespace"] == "ds_a" and b["rel_namespace"] == "cat.sch_b"
+    for args in (a, b):
+        assert args["exclude_columns"] == ["amount", "orders.status"]
+        assert args["exclude_prefixes"] == ["tmp_"] and args["no_default_exclude"] is True
+    opts = env.last_json()["options"]
+    assert opts["exclude_columns"] == ["amount", "orders.status"] and opts["no_default_exclude"] is True
+    cmd = env.last_json()["command"]
+    assert "--schema-b cat.sch_b" in cmd and "--exclude-column orders.status" in cmd and "--no-default-exclude" in cmd
+
+
+def test_defaults_send_no_namespace_nor_exclusion(env):
+    two_sides(env)
+    assert env.run(*RUN).rc == 0
+    for args in env.call_args()[:2]:
+        assert not {"rel_namespace", "exclude_columns", "exclude_prefixes", "no_default_exclude"} & set(args)
+
+
+def test_schema_only_on_one_side(env):
+    two_sides(env)
+    assert env.run(*RUN, "--schema-b", "legacy").rc == 0
+    a, b = env.call_args()[:2]
+    assert "rel_namespace" not in a and b["rel_namespace"] == "legacy"
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--schema-a", ""), ("--schema-a", "a.b.c"), ("--schema-b", "bad'name"), ("--schema-b", "a b"),
+    ("--exclude-column", ""), ("--exclude-column", "  "), ("--exclude-column", ".col"), ("--exclude-column", "orders."),
+    ("--exclude-column", 'a"b'), ("--exclude-prefix", ""), ("--exclude-prefix", "a\\b"),
+])
+def test_invalid_schema_and_exclusion_values_are_rejected(env, flag, value):
+    two_sides(env)
+    r = env.run(*RUN, flag, value)
+    assert r.rc == 2 and "expected" in r.err
+    assert env.calls() == []  # rejected before any dbt call
 
 
 def test_scope_difference_between_sides_is_structure(env):

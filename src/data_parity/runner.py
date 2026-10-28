@@ -76,6 +76,7 @@ class Side:
     binary: str = "dbt"
     project: Path = field(default_factory=Path.cwd)
     profiles_dir: Optional[Path] = None
+    namespace: Optional[str] = None  # [database.]schema holding this side's tables (--schema-a / --schema-b)
 
 
 @dataclass
@@ -137,6 +138,9 @@ def run_macro(side: Side, macro: str, args: Optional[Dict[str, Any]] = None) -> 
 
 
 def run_reconcile(side: Side, args: Dict[str, Any]) -> CallResult:
+    if side.namespace:
+        # per side, so it is added here and not in the arguments shared by both sides
+        args = dict(args, rel_namespace=side.namespace)
     return run_macro(side, RECONCILE_MACRO, args)
 
 

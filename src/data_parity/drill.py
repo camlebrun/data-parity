@@ -42,6 +42,9 @@ class Options:
     last: Optional[int] = None
     drill_limit: int = 200
     detail: Optional[int] = 15  # None = every partition
+    exclude_columns: List[str] = field(default_factory=list)  # `col` or `model.col`
+    exclude_prefixes: List[str] = field(default_factory=list)
+    no_default_exclude: bool = False  # drop the built-in `meta_` prefix
 
     @property
     def scope_limited(self) -> bool:
@@ -345,7 +348,10 @@ class RunResult:
     def from_dict(cls, d: Dict[str, Any], parts_by_model: Optional[Dict[str, List[str]]] = None) -> "RunResult":
         o = d.get("options") or {}
         opts = Options(models=list(o.get("models") or []), buckets=o.get("buckets", 256), as_of=o.get("as_of"),
-                       last=o.get("last"), drill_limit=o.get("drill_limit", 200))
+                       last=o.get("last"), drill_limit=o.get("drill_limit", 200),
+                       exclude_columns=list(o.get("exclude_columns") or []),
+                       exclude_prefixes=list(o.get("exclude_prefixes") or []),
+                       no_default_exclude=bool(o.get("no_default_exclude", False)))
         r = cls(status=d.get("verdict", "error"), label_a=d["side_a"]["label"], label_b=d["side_b"]["label"],
                 target_a=d["side_a"]["target"], target_b=d["side_b"]["target"], options=opts,
                 errors=list(d.get("errors") or []), error_detail=list(d.get("error_detail") or []),
@@ -371,6 +377,9 @@ class RunResult:
                 "as_of": self.options.as_of,
                 "last": self.options.last,
                 "drill_limit": self.options.drill_limit,
+                "exclude_columns": self.options.exclude_columns,
+                "exclude_prefixes": self.options.exclude_prefixes,
+                "no_default_exclude": self.options.no_default_exclude,
             },
             "command": self.command,
             "models_total": len(self.models),
@@ -436,6 +445,12 @@ class Drill:
         args["buckets"] = o.buckets
         if o.as_of:
             args["as_of"] = o.as_of
+        if o.exclude_columns:
+            args["exclude_columns"] = list(o.exclude_columns)
+        if o.exclude_prefixes:
+            args["exclude_prefixes"] = list(o.exclude_prefixes)
+        if o.no_default_exclude:
+            args["no_default_exclude"] = True
         return args
 
     def run(self) -> RunResult:

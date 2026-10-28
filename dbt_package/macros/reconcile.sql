@@ -152,7 +152,9 @@
   {%- set declared = meta.get('primary_key') -%}
   {%- if declared -%}
     {%- set lst = [declared] if declared is string else declared -%}
-    {{- return(lst | map('lower') | list) -}}
+    {%- set normed = [] -%}
+    {%- for k in lst -%}{%- do normed.append(data_parity_norm_name(k) | trim) -%}{%- endfor -%}
+    {{- return(normed) -}}
   {%- endif -%}
   {%- set singles = [] -%}
   {%- set combos = [] -%}
@@ -162,10 +164,14 @@
       {%- set kw = tm.get('kwargs') or {} -%}
       {%- if tm.get('name') == 'unique' -%}
         {%- set cn = kw.get('column_name') or t.get('column_name') -%}
-        {%- if cn -%}{%- do singles.append(cn | lower) -%}{%- endif -%}
+        {%- if cn -%}{%- do singles.append(data_parity_norm_name(cn) | trim) -%}{%- endif -%}
       {%- elif tm.get('name') == 'unique_combination_of_columns' -%}
         {%- set cc = kw.get('combination_of_columns') -%}
-        {%- if cc -%}{%- do combos.append(cc | map('lower') | sort | list) -%}{%- endif -%}
+        {%- if cc -%}
+          {%- set normed_cc = [] -%}
+          {%- for k in cc -%}{%- do normed_cc.append(data_parity_norm_name(k) | trim) -%}{%- endfor -%}
+          {%- do combos.append(normed_cc | sort | list) -%}
+        {%- endif -%}
       {%- endif -%}
     {%- endif -%}
   {%- endfor -%}
@@ -174,7 +180,7 @@
   {{- return([]) -}}
 {% endmacro %}
 
-{% macro data_parity_reconcile(only=none, level=3, drill=none, drill_buckets=none, buckets=256, as_of=none, partitions=none) %}
+{% macro data_parity_reconcile(only=none, level=3, drill=none, drill_buckets=none, buckets=256, as_of=none, partitions=none, rel_namespace=none, relations=none, exclude_columns=none, exclude_prefixes=none, no_default_exclude=false) %}
   {% if not execute %}{{ return('') }}{% endif %}
   {% set level = level | int %}
   {% set nb = buckets | int %}
@@ -201,18 +207,28 @@
   {% for node in models %}
     {% set meta = (node.config.meta or {}).get('data_parity') %}
     {% set meta = meta if meta is mapping else {} %}
-    {% set rel = ref(node.name) %}
-    {% set excl_c = data_parity_cfg_list(meta.get('exclude_columns'), node.name ~ ': meta.data_parity.exclude_columns', []) | map('lower') | list %}
-    {% set excl_p = data_parity_cfg_list(meta.get('exclude_prefixes'), node.name ~ ': meta.data_parity.exclude_prefixes', ['meta_']) %}
+    {% set rel = data_parity_rc_relation(node, ref(node.name), rel_namespace, relations) %}
+    {% set excl = data_parity_rc_exclusions(node, meta, exclude_columns, exclude_prefixes, data_parity_cfg_bool(no_default_exclude, 'no_default_exclude')) %}
+    {% set excl_c = excl['cols'] %}
+    {% set excl_p = excl['prefixes'] %}
     {% set excluded = [] %}
-    {% set pcol_name = (meta.get('partition_column') or meta.get('date_column') or node.config.get('event_time') or '') | lower %}
+    {% set pcol_name = data_parity_norm_name(meta.get('partition_column') or meta.get('date_column') or node.config.get('event_time') or '') | trim %}
 
-    {# ---- columns: sorted by lower name, minus exclusions #}
+    {# ---- columns: matched on the normalized name (a/b and a_b are the same column), minus exclusions #}
     {% set cols = [] %}
-    {% for c in adapter.get_columns_in_relation(rel) | sort(attribute='name') %}
-      {% set n = c.name | lower %}
+    {% set seen = {} %}
+    {% set live_cols = adapter.get_columns_in_relation(rel) %}
+    {% if live_cols | length == 0 %}
+      {% do exceptions.raise_compiler_error('data_parity_reconcile: ' ~ node.name ~ ': relation ' ~ rel ~ ' not found or has no columns on target ' ~ target.name ~ ' (check namespace / relations, or run dbt for this target)') %}
+    {% endif %}
+    {% for c in live_cols %}
+      {% set n = data_parity_norm_name(c.name) | trim %}
+      {% if n in seen %}
+        {% do exceptions.raise_compiler_error('data_parity_reconcile: ' ~ node.name ~ ": columns '" ~ seen[n] ~ "' and '" ~ c.name ~ "' are the same column once normalized (" ~ n ~ ')') %}
+      {% endif %}
+      {% do seen.update({n: c.name}) %}
       {% set skip = namespace(value = n in excl_c) %}
-      {% for p in excl_p %}{% if n.startswith(p | lower) %}{% set skip.value = true %}{% endif %}{% endfor %}
+      {% for p in excl_p %}{% if n.startswith(p) %}{% set skip.value = true %}{% endif %}{% endfor %}
       {% if not skip.value %}
         {% do cols.append({'name': c.name, 'lname': n, 'data_type': c.data_type, 'cls': data_parity_type_class(c.data_type, target.type == 'bigquery') | trim}) %}
       {% else %}

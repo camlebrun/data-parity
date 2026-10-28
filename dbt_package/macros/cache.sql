@@ -57,16 +57,20 @@
           and (only is none or node.name in only) %}
       {% set meta = meta if meta is mapping else {} %}
       {% set rel = ref(node.name) %}
-      {% set excl_c = data_parity_cfg_list(meta.get('exclude_columns'), node.name ~ ': meta.data_parity.exclude_columns', []) | map('lower') | list %}
-      {% set excl_p = data_parity_cfg_list(meta.get('exclude_prefixes'), node.name ~ ': meta.data_parity.exclude_prefixes', ['meta_']) %}
+      {% set excl = data_parity_rc_exclusions(node, meta, none, none, false) %}
+      {% set excl_c = excl['cols'] %}
+      {% set excl_p = excl['prefixes'] %}
       {% set excluded = [] %}
-      {% set part_col = meta.get('partition_column') or node.config.get('event_time') %}
+      {% set part_col = data_parity_norm_name(meta.get('partition_column') or node.config.get('event_time') or '') | trim %}
       {% set bq = (target.type == 'bigquery') %}
       {% set by_name = {} %}
       {% for c in adapter.get_columns_in_relation(rel) %}
-        {% set n = c.name | lower %}
+        {% set n = data_parity_norm_name(c.name) | trim %}
+        {% if n in by_name %}
+          {% do exceptions.raise_compiler_error("data_parity cache: " ~ node.name ~ ": columns '" ~ by_name[n]['name'] ~ "' and '" ~ c.name ~ "' are the same column once normalized (" ~ n ~ ")") %}
+        {% endif %}
         {% set skip = namespace(value = n in excl_c) %}
-        {% for p in excl_p %}{% if n.startswith(p | lower) %}{% set skip.value = true %}{% endif %}{% endfor %}
+        {% for p in excl_p %}{% if n.startswith(p) %}{% set skip.value = true %}{% endif %}{% endfor %}
         {% if not skip.value %}
           {% do by_name.update({n: {'name': c.name, 'data_type': c.data_type, 'cls': data_parity_type_class(c.data_type, bq) | trim}}) %}
         {% else %}
@@ -82,7 +86,7 @@
       {% set cols_line = pieces | join(',') %}
       {% set pexpr = none %}
       {% if part_col %}
-        {% set pc = by_name.get(part_col | lower) %}
+        {% set pc = by_name.get(part_col) %}
         {% if pc is none %}
           {% do exceptions.raise_compiler_error("data_parity cache: partition column '" ~ part_col ~ "' not found (or excluded) in " ~ node.name) %}
         {% endif %}

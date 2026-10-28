@@ -57,6 +57,47 @@ def extract_excluded(text: str) -> Dict[str, str]:
     return out
 
 
+_LOCATION = re.compile(r"(?:-->\s*|\(in\s+)([^\s:)]+(?::\d+)*)")
+_PKG_MISSING = re.compile(r"Template not found for macro 'data_parity_|macro 'data_parity_\w*' (?:is undefined|not found)"
+                          r"|'data_parity_\w*' is undefined", re.I)
+_OWN_ERROR = re.compile(r"(data_parity(?:_\w+)?: .+)$")
+_REF_MISSING = re.compile(r"Ref '([^']+)' not found|depends on a node named '([^']+)' which was not found", re.I)
+_PROFILE = re.compile(r"target '[^']+' not found in profile|Could not find profile|profile '[^']+' not found", re.I)
+_PARSE = re.compile(r"Failed to render|syntax error|Compilation Error|Parsing Error|MacroSyntaxInvalid|dbt1502", re.I)
+
+
+def classify_failure(text: str) -> Optional[str]:
+    """Cause and fix for the dbt failures we know (package missing, own macro error, unresolvable ref, profile, parse).
+
+    None when the output matches no known shape: the caller falls back to the generic message and the log tail.
+    """
+    clean = strip_ansi(text)
+    lines = [x.strip() for x in clean.splitlines() if x.strip()]
+    if _PKG_MISSING.search(clean):
+        return "the data_parity package is not installed in this project: run `dbt deps` in that project"
+    for ln in lines:
+        m = _OWN_ERROR.search(ln)
+        if m:
+            return m.group(1)
+    where = ""
+    for ln in lines:
+        loc = _LOCATION.search(ln)
+        if loc:
+            where = " (%s)" % loc.group(1)
+            break
+    m = _REF_MISSING.search(clean)
+    if m:
+        return ("a ref() cannot be resolved: model or source '%s' does not exist in this project%s; "
+                "check the name, run `dbt deps`, or the project directory" % (m.group(1) or m.group(2), where))
+    if _PROFILE.search(clean):
+        first = next((x for x in lines if _PROFILE.search(x)), "")
+        return "the dbt target or profile cannot be used: %s; check --a/--b and --profiles-dir-*" % first.split("]: ", 1)[-1]
+    if _PARSE.search(clean):
+        first = next((x for x in lines if _PARSE.search(x)), "")
+        return "the project does not parse or compile%s: %s" % (where, first.split("]: ", 1)[-1])
+    return None
+
+
 def resolve_binary(name: str) -> Optional[str]:
     """Absolute path of a dbt binary (shutil.which handles dbt.exe / dbt.cmd on Windows), or None."""
     found = shutil.which(name)
@@ -77,6 +118,7 @@ class Side:
     project: Path = field(default_factory=Path.cwd)
     profiles_dir: Optional[Path] = None
     namespace: Optional[str] = None  # [database.]schema holding this side's tables (--schema-a / --schema-b)
+    relations: Dict[str, str] = field(default_factory=dict)  # model -> [database.]schema.table (--mapping-a / --mapping-b)
 
 
 @dataclass
@@ -92,6 +134,9 @@ class CallResult:
         return self.returncode != 0 or not self.lines
 
     def reason(self) -> str:
+        known = classify_failure(self.raw)
+        if known:
+            return known
         if self.returncode != 0:
             return "dbt exited with code %s" % self.returncode
         return "dbt produced no PARITY output (is the data_parity package installed? run `dbt deps`)"
@@ -138,9 +183,11 @@ def run_macro(side: Side, macro: str, args: Optional[Dict[str, Any]] = None) -> 
 
 
 def run_reconcile(side: Side, args: Dict[str, Any]) -> CallResult:
+    # per side, so these are added here and not in the arguments shared by both sides
     if side.namespace:
-        # per side, so it is added here and not in the arguments shared by both sides
         args = dict(args, rel_namespace=side.namespace)
+    if side.relations:
+        args = dict(args, relations=dict(side.relations))
     return run_macro(side, RECONCILE_MACRO, args)
 
 

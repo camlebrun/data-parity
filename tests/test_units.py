@@ -1,9 +1,10 @@
 import pytest
 
-from data_parity.drill import parse_section, parse_sections, ParityError, pkey
+from data_parity.drill import _cols_of, parse_section, parse_sections, ParityError, pkey
 from data_parity.envfile import parse_env_text
 from data_parity.report import bar, join_command, pct, quote_arg
-from data_parity.runner import extract_excluded, extract_parity
+from data_parity.mapping import MappingError, parse_mapping_text
+from data_parity.runner import CallResult, classify_failure, extract_excluded, extract_parity
 
 
 def test_extract_parity_tolerates_noise():
@@ -67,3 +68,57 @@ def test_malformed_line_is_an_error():
 def test_pct_and_bar():
     assert pct(1, 3) == "33%" and pct(1, 100) == "1.0%" and pct(0, 0) == "-"
     assert bar(0.0) == "\u2591" * 10 and bar(1.0) == "\u2588" * 10 and bar(0.01).startswith("\u2588")
+
+
+# ---- dbt failures (outputs recorded from dbt Fusion 2.0.9)
+
+def test_classify_package_not_installed():
+    out = "[error] [JinjaError (dbt1501)]: Template not found for macro 'data_parity_reconcile'\n"
+    assert "data_parity package is not installed" in classify_failure(out) and "dbt deps" in classify_failure(out)
+    assert "dbt deps" in classify_failure("Compilation Error: 'data_parity_reconcile' is undefined")
+
+
+def test_classify_unresolvable_ref_names_the_model_and_file():
+    out = "[error] [DependencyNotFound (dbt1048)]: Ref 'nope' not found in project. Searched for 'p.nope, nope'\n  --> models/bad.sql:1:15\n"
+    msg = classify_failure(out)
+    assert "'nope'" in msg and "models/bad.sql:1:15" in msg
+    assert "'ghost'" in classify_failure("Model 'model.p.a' depends on a node named 'ghost' which was not found")
+
+
+def test_classify_parse_error_names_the_file():
+    out = "[error] [MacroSyntaxInvalid (dbt1502)]: Failed to render SQL syntax error: unexpected end of variable block\n(in models/bad.sql:1:15)\n"
+    msg = classify_failure(out)
+    assert "does not parse" in msg and "models/bad.sql:1:15" in msg
+
+
+def test_classify_profile_and_own_macro_errors():
+    assert "cannot be used" in classify_failure("[error] [InvalidConfig (dbt1005)]: target 'nope' not found in profile 'p'")
+    own = "[error] [JinjaError (dbt1501)]: Failed to run operation Compilation Error: data_parity_reconcile: orders: relation x not found"
+    assert classify_failure(own).startswith("data_parity_reconcile: orders: relation x not found")
+
+
+def test_classify_unknown_falls_back_to_the_generic_reason():
+    assert classify_failure("Database Error: connection refused") is None
+    assert "exited with code 3" in CallResult("B", 3, [], {}, "Database Error: connection refused").reason()
+    assert "no PARITY output" in CallResult("B", 0, [], {}, "nothing").reason()
+    assert "dbt deps" in CallResult("B", 1, [], {}, "Template not found for macro 'data_parity_reconcile'").reason()
+
+
+# ---- mapping file
+
+def test_mapping_parses_comments_quotes_and_crlf():
+    text = "\ufeff# head\r\norders: cat.sch.orders_v2  # why\r\n\r\ncustomers: 'sch.cust'\r\n"
+    assert parse_mapping_text(text) == {"orders": "cat.sch.orders_v2", "customers": "sch.cust"}
+
+
+@pytest.mark.parametrize("text", ["orders", ": s.t", "orders:", "orders: t", "orders: a.b.c.d", "orders: a.b'c", "orders: a b.c", "orders: s.t\norders: s.u"])
+def test_mapping_rejects_bad_entries(text):
+    with pytest.raises(MappingError):
+        parse_mapping_text(text)
+
+
+# ---- columns of the structure line
+
+def test_cols_of_reads_normalized_names_and_classes():
+    assert _cols_of(["cols|a_b:str,id:int", "pk|id"]) == {"a_b": "str", "id": "int"}
+    assert _cols_of(["pk|id"]) == {}

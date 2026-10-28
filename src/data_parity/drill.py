@@ -45,6 +45,7 @@ class Options:
     exclude_columns: List[str] = field(default_factory=list)  # `col` or `model.col`
     exclude_prefixes: List[str] = field(default_factory=list)
     no_default_exclude: bool = False  # drop the built-in `meta_` prefix
+    legacy: str = "b"  # which side is the legacy one (a | b); only used to word the report
 
     @property
     def scope_limited(self) -> bool:
@@ -229,6 +230,10 @@ class ModelResult:
     table_columns: List[str] = field(default_factory=list)  # table-level differing columns
     column_buckets: Dict[str, int] = field(default_factory=dict)  # table-level: column -> buckets affected
     structure_diff: List[str] = field(default_factory=list)
+    structure_kind: str = ""  # only_a | only_b | schema (verdict "structure" only)
+    cols_only_a: List[str] = field(default_factory=list)  # schema mismatch: normalized column names
+    cols_only_b: List[str] = field(default_factory=list)
+    cols_type_diff: List[str] = field(default_factory=list)  # "name (A: class, B: class)"
     notes: List[str] = field(default_factory=list)
     scope: List[str] = field(default_factory=list)
     scope_info: Dict[str, str] = field(default_factory=dict)
@@ -272,6 +277,10 @@ class ModelResult:
             m.column_buckets = {c["column"]: c["affected"] for c in d.get("columns") or []}
             m.table_columns = sorted(m.column_buckets)
         m.structure_diff = list(d.get("structure_diff") or [])
+        m.structure_kind = d.get("structure_kind") or ""
+        m.cols_only_a = list(d.get("columns_only_a") or [])
+        m.cols_only_b = list(d.get("columns_only_b") or [])
+        m.cols_type_diff = list(d.get("column_type_diff") or [])
         m.notes = list(d.get("notes") or [])
         m.scope = list(d.get("scope") or [])
         m.scope_info = parse_scope_info(m.scope)
@@ -297,6 +306,10 @@ class ModelResult:
                 {"bucket": b, "kind": k, "rows_a": ra, "rows_b": rb} for b, k, ra, rb in self.bucket_diffs
             ],
             "structure_diff": self.structure_diff,
+            "structure_kind": self.structure_kind,
+            "columns_only_a": self.cols_only_a,
+            "columns_only_b": self.cols_only_b,
+            "column_type_diff": self.cols_type_diff,
             "notes": self.notes,
             "scope": self.scope,
             "excluded_columns": self.excluded,
@@ -323,6 +336,21 @@ class RunResult:
     @property
     def exit_code(self) -> int:
         return {"identical": 0, "identical_scoped": 0, "differences": 1}.get(self.status, 2)
+
+    def names_of(self, kind: str) -> List[str]:
+        return [m.name for m in self.models if m.structure_kind == kind]
+
+    def role(self, side: str) -> str:
+        """legacy | target: which role side "A" / "B" plays (--legacy a|b)."""
+        return "legacy" if self.options.legacy.upper() == side.upper() else "target"
+
+    def one_sided_text(self, m: "ModelResult") -> str:
+        """Report wording of a model present on one side only, by the role of that side."""
+        side = "A" if m.structure_kind == "only_a" else "B"
+        label = self.label_a if side == "A" else self.label_b
+        if self.role(side) == "legacy":
+            return "only in the legacy side %s (not migrated yet)" % label
+        return "only in the target side %s (no legacy counterpart)" % label
 
     @property
     def scope_limited(self) -> bool:
@@ -351,7 +379,7 @@ class RunResult:
                        last=o.get("last"), drill_limit=o.get("drill_limit", 200),
                        exclude_columns=list(o.get("exclude_columns") or []),
                        exclude_prefixes=list(o.get("exclude_prefixes") or []),
-                       no_default_exclude=bool(o.get("no_default_exclude", False)))
+                       no_default_exclude=bool(o.get("no_default_exclude", False)), legacy=o.get("legacy", "b"))
         r = cls(status=d.get("verdict", "error"), label_a=d["side_a"]["label"], label_b=d["side_b"]["label"],
                 target_a=d["side_a"]["target"], target_b=d["side_b"]["target"], options=opts,
                 errors=list(d.get("errors") or []), error_detail=list(d.get("error_detail") or []),
@@ -380,10 +408,14 @@ class RunResult:
                 "exclude_columns": self.options.exclude_columns,
                 "exclude_prefixes": self.options.exclude_prefixes,
                 "no_default_exclude": self.options.no_default_exclude,
+                "legacy": self.options.legacy,
             },
             "command": self.command,
             "models_total": len(self.models),
             "models_differing": self.n_diff,
+            "only_in_a": self.names_of("only_a"),
+            "only_in_b": self.names_of("only_b"),
+            "schema_mismatch": self.names_of("schema"),
             "errors": self.errors,
             "error_detail": self.error_detail,
             "models": [m.to_dict() for m in self.models],
@@ -471,7 +503,24 @@ class Drill:
                 raise ParityError(
                     "model(s) not found in the dbt output: %s. Check the spelling, and that the model is tagged "
                     "`data_parity` (or has config.meta.data_parity) and not disabled." % ", ".join(gaps))
-        names = sorted(set(raw_a) | set(raw_b))
+        # a model whose table does not exist on one side is a finding ("only on the other side"), unless no model of
+        # that side has a table: then the namespace / mapping is wrong, which is an error
+        missing_rel: Dict[str, Dict[str, str]] = {"A": {}, "B": {}}
+        for side, raw in (("A", raw_a), ("B", raw_b)):
+            for n in list(raw):
+                absent = [x for x in raw[n] if x.startswith("absent|")]
+                if absent:
+                    missing_rel[side][n] = absent[0].split("|", 1)[1]
+                    del raw[n]
+            if missing_rel[side] and not raw:
+                first = sorted(missing_rel[side].items())[0]
+                raise ParityError(
+                    "no table found on side %s for any of its %d model(s) (e.g. %s: %s): check --schema-%s / --mapping-%s"
+                    % (side, len(missing_rel[side]), first[0], first[1], side.lower(), side.lower()))
+        for n in sorted(set(missing_rel["A"]) & set(missing_rel["B"])):
+            raise ParityError("model %s: no table on side A (%s) nor on side B (%s): check --schema-a/b or --mapping-a/b"
+                              % (n, missing_rel["A"][n], missing_rel["B"][n]))
+        names = sorted(set(raw_a) | set(raw_b) | set(missing_rel["A"]) | set(missing_rel["B"]))
         if not names:
             raise ParityError("no model in the outputs: tag your models with `data_parity` (see the README)")
 
@@ -497,11 +546,20 @@ class Drill:
             state[n] = st
             if n not in raw_a or n not in raw_b:
                 side = "A" if n in raw_a else "B"
+                other = "B" if side == "A" else "A"
                 mr.verdict = "structure"
+                mr.structure_kind = "only_a" if n in raw_a else "only_b"
                 mr.structure_diff = ["model present only on side %s" % side]
+                if n in missing_rel[other]:
+                    mr.structure_diff.append("side %s: table %s not found" % (other, missing_rel[other][n]))
                 continue
             if sa.struct != sb.struct:
                 mr.verdict = "structure"
+                mr.structure_kind = "schema"
+                ca, cb = _cols_of(sa.struct), _cols_of(sb.struct)
+                mr.cols_only_a = sorted(set(ca) - set(cb))
+                mr.cols_only_b = sorted(set(cb) - set(ca))
+                mr.cols_type_diff = ["%s (A: %s, B: %s)" % (c, ca[c], cb[c]) for c in sorted(set(ca) & set(cb)) if ca[c] != cb[c]]
                 mr.structure_diff = _struct_diff(sa.struct, sb.struct)
                 continue
             if sa.table is None or sb.table is None:
@@ -593,6 +651,19 @@ class Drill:
         if missing:
             raise ParityError("%s: no output for %s" % (what, ", ".join(missing)))
         return {m: (parse_section(m, da[m]), parse_section(m, db[m])) for m in wanted}
+
+
+def _cols_of(struct: List[str]) -> Dict[str, str]:
+    """{normalized column: type class} from the ``cols|name:class,...`` structure line."""
+    for ln in struct:
+        if ln.startswith("cols|"):
+            out: Dict[str, str] = {}
+            for piece in ln[5:].split(","):
+                name, _, cls = piece.rpartition(":")
+                if name:
+                    out[name] = cls
+            return out
+    return {}
 
 
 def _struct_diff(a: List[str], b: List[str]) -> List[str]:

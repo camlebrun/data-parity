@@ -19,6 +19,7 @@ from typing import List, Optional
 from . import __version__
 from .drill import Options, ParityError, RunResult, compare, conformance, parse_section, parse_sections, pkey
 from .envfile import load_env_file
+from .mapping import MappingError, load_mapping
 from .report import (ascii_safe, join_command, render_json, render_markdown,
                      terminal_summary)
 from .runner import Side
@@ -42,6 +43,9 @@ common options:
   --project DIR             dbt project directory (default: current directory)
   --project-b DIR           project directory of side B, if different
   --profiles-dir-a/-b DIR   dbt profiles directory per side
+  --schema-a/-b [DB.]SCHEMA table of each model is read in this schema instead of the project's ref()
+  --mapping-a/-b FILE       `model: [db.]schema.table` lines; wins over --schema-a/-b
+  --label-a/-b TEXT         side names in the report (default: the targets)
 
 run options:
   --as-of YYYY-MM-DD        exclude partitions on or after this date (freshness gap is not a content gap)
@@ -49,6 +53,10 @@ run options:
   --buckets N               hash buckets per partition (default 256)
   --drill-limit N           max partitions drilled per model (default 200); above it, the drilled
                             partitions are spread evenly from the first to the last differing one
+  --exclude-column COL      column left out on both sides, or MODEL.COL for one model (repeatable)
+  --exclude-prefix PREFIX   columns starting with PREFIX are left out (repeatable; meta_ always, see below)
+  --no-default-exclude      also compare the meta_ columns
+  --legacy a|b              which side is the legacy one (default b); words models found on one side only
   --detail N                partitions listed inline in the report (default and maximum 15; the
                             complete list is in parity.json)
   --out DIR                 work directory; a fresh run-<timestamp> sub-directory is created inside
@@ -122,6 +130,10 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="read the tables of side A in this schema instead of the project's own ref() (a mapping entry still wins)")
     p.add_argument("--schema-b", type=_namespace, metavar="[DB.]SCHEMA",
                    help="same for side B (e.g. the legacy Trino schema of a BigQuery repo)")
+    p.add_argument("--mapping-a", metavar="FILE", help="file `model: [db.]schema.table` giving the table read on side A (wins over --schema-a)")
+    p.add_argument("--mapping-b", metavar="FILE", help="same for side B")
+    p.add_argument("--label-a", metavar="TEXT", help="name of side A in the report (default: its target)")
+    p.add_argument("--label-b", metavar="TEXT", help="name of side B in the report (default: its target)")
     p.add_argument("--out", metavar="DIR", help="work directory; a fresh run-<timestamp> sub-directory is created inside")
 
 
@@ -141,6 +153,8 @@ def build_parser(cmd: str) -> argparse.ArgumentParser:
         p.add_argument("--exclude-prefix", type=_exclude_prefix, action="append", default=[], metavar="PREFIX",
                        help="columns starting with PREFIX are left out (repeatable; `meta_` is always excluded unless --no-default-exclude)")
         p.add_argument("--no-default-exclude", action="store_true", help="also compare the `meta_` columns")
+        p.add_argument("--legacy", choices=("a", "b"), default="b",
+                       help="which side is the legacy one, the other being the migration target (default b); only words the report")
         p.add_argument("--report", metavar="FILE", help="Markdown report path")
         p.add_argument("--json", metavar="FILE", help="machine-readable result path")
     return p
@@ -202,8 +216,13 @@ def _resolve(args: argparse.Namespace, parser: argparse.ArgumentParser, cmd: str
             raise ParityError("no dbt_project.yml in %s (run from your dbt project or use --project)" % d)
     prof_a = Path(args.profiles_dir_a).resolve() if args.profiles_dir_a else None
     prof_b = Path(args.profiles_dir_b).resolve() if args.profiles_dir_b else None
-    sa = Side("A", a, a, args.dbt_a, project, prof_a, args.schema_a)
-    sb = Side("B", b, b, args.dbt_b, project_b, prof_b, args.schema_b)
+    try:
+        rel_a = load_mapping(Path(args.mapping_a)) if args.mapping_a else {}
+        rel_b = load_mapping(Path(args.mapping_b)) if args.mapping_b else {}
+    except MappingError as exc:
+        raise ParityError(str(exc))
+    sa = Side("A", args.label_a or a, a, args.dbt_a, project, prof_a, args.schema_a, rel_a)
+    sb = Side("B", args.label_b or b, b, args.dbt_b, project_b, prof_b, args.schema_b, rel_b)
     base = Path(args.out).resolve() if args.out else Path(tempfile.gettempdir()) / "data-parity" / project.name
     return sa, sb, base
 
@@ -213,10 +232,12 @@ def _command_line(cmd: str, args: argparse.Namespace, models: List[str]) -> str:
     pairs = [("--dbt-a", args.dbt_a, "dbt"), ("--dbt-b", args.dbt_b, "dbt"), ("--project", args.project, None),
              ("--project-b", args.project_b, None), ("--profiles-dir-a", args.profiles_dir_a, None),
              ("--profiles-dir-b", args.profiles_dir_b, None), ("--schema-a", args.schema_a, None),
-             ("--schema-b", args.schema_b, None)]
+             ("--schema-b", args.schema_b, None), ("--mapping-a", args.mapping_a, None),
+             ("--mapping-b", args.mapping_b, None), ("--label-a", args.label_a, None), ("--label-b", args.label_b, None)]
     if cmd == "run":
         pairs += [("--as-of", args.as_of, None), ("--last", args.last, None), ("--buckets", args.buckets, 256),
-                  ("--drill-limit", args.drill_limit, 200), ("--detail", "all" if args.detail is None else args.detail, 15)]
+                  ("--drill-limit", args.drill_limit, 200), ("--detail", "all" if args.detail is None else args.detail, 15),
+                  ("--legacy", args.legacy, "b")]
     for flag, val, default in pairs:
         if val is not None and val != default:
             argv += [flag, str(val)]
@@ -244,7 +265,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     args.a, args.b = sa.target, sb.target
     opts = Options(models=models, buckets=args.buckets, as_of=args.as_of, last=args.last,
                    drill_limit=args.drill_limit, detail=args.detail, exclude_columns=list(args.exclude_column),
-                   exclude_prefixes=list(args.exclude_prefix), no_default_exclude=args.no_default_exclude)
+                   exclude_prefixes=list(args.exclude_prefix), no_default_exclude=args.no_default_exclude,
+                   legacy=args.legacy)
     try:
         run_dir = make_run_dir(base)
     except OSError as exc:

@@ -11,7 +11,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 import traceback
 from pathlib import Path
 from typing import List, Optional
@@ -60,6 +59,7 @@ run options:
   --detail N                partitions listed inline in the report (default and maximum 15; the
                             complete list is in parity.json)
   --out DIR                 work directory; a fresh run-<timestamp> sub-directory is created inside
+                            (default: ./parity_out in the dbt project, git-ignored there like any output)
   --report FILE             Markdown report path (default: <out>/run-<timestamp>/parity.md);
                             parity.json stays in the run directory
   --json FILE               also write a machine-readable result
@@ -223,7 +223,7 @@ def _resolve(args: argparse.Namespace, parser: argparse.ArgumentParser, cmd: str
         raise ParityError(str(exc))
     sa = Side("A", args.label_a or a, a, args.dbt_a, project, prof_a, args.schema_a, rel_a)
     sb = Side("B", args.label_b or b, b, args.dbt_b, project_b, prof_b, args.schema_b, rel_b)
-    base = Path(args.out).resolve() if args.out else Path(tempfile.gettempdir()) / "data-parity" / project.name
+    base = Path(args.out).resolve() if args.out else project / "parity_out"
     return sa, sb, base
 
 

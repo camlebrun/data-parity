@@ -160,8 +160,7 @@ mauvais usage). Une erreur ne donne jamais 0 ni 1. Un périmètre partiel (`--la
 descendues) donne 0 avec le verdict « ISO on the checked scope » et `scope_limited: true` dans le JSON : ce n'est
 jamais « ISO » tout court.
 
-Le résultat est écrit dans un sous-dossier neuf `run-<horodatage>` de `--out` (défaut : dossier temporaire du système,
-`data-parity/<projet>`) : `parity.md`, `parity.json`, et les sorties brutes `p1_A.txt`, `p1_B.txt`... Les journaux bruts
+Le résultat est écrit dans un sous-dossier neuf `run-<horodatage>` de `--out` (défaut : `parity_out/` dans le projet dbt du côté A) : `parity.md`, `parity.json`, et les sorties brutes `p1_A.txt`, `p1_B.txt`... Les journaux bruts
 dbt (`raw_*.log`) ne sont écrits que pour un appel dbt en échec. Le chemin du rapport est affiché à la fin.
 
 Les trois passages (lancés par l'outil, un par un, seulement là où c'est nécessaire) :

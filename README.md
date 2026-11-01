@@ -83,7 +83,7 @@ The last command finds 5 differing days in `orders`, 1 column in `customers` and
 | `--buckets N` | hash buckets per partition (default 256) |
 | `--drill-limit N` | max partitions drilled per model (default 200); above it a deterministic sample spread evenly from the first to the last differing partition is drilled (first and last always included); the report says "column attribution is based on a sample of N of K differing days, spread evenly from F to L" and the others read "not sampled" |
 | `--detail N` | partitions listed inline in the report (default and maximum 15); the complete list of differing partitions stays in `parity.json` (aggregates only) |
-| `--out DIR` | work directory; a fresh `run-<timestamp>` sub-directory is created inside (default: system temp dir / `data-parity` / project name) |
+| `--out DIR` | work directory; a fresh `run-<timestamp>` sub-directory is created inside (default: `parity_out/` in the dbt project of side A) |
 | `--report FILE`, `--json FILE` | where to write the Markdown report and the JSON result (defaults: `parity.md` and `parity.json` in the run directory) |
 
 `data-parity report RUN_DIR [--out FILE]` re-renders `parity.md` from a saved run directory (`parity.json`, `p1_A.txt`, `p1_B.txt`) without calling dbt; exit 2 if they are missing. A run made by an older version holds an oldest-N sample, so its re-rendered "spread evenly" sentence is inaccurate: only a fresh run gives a real sample.

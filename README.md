@@ -85,6 +85,7 @@ The last command finds 5 differing days in `orders`, 1 column in `customers` and
 | `--detail N` | partitions listed inline in the report (default and maximum 15); the complete list of differing partitions stays in `parity.json` (aggregates only) |
 | `--out DIR` | work directory; a fresh `run-<timestamp>` sub-directory is created inside (default: `parity_out/` in the dbt project of side A) |
 | `--report FILE`, `--json FILE` | where to write the Markdown report and the JSON result (defaults: `parity.md` and `parity.json` in the run directory) |
+| `--no-hint`, `--no-timeline`, `--technical` | report content: drop the "To inspect" line of each differing model, drop the per-month table, or add the hash buckets and method details (also accepted by `data-parity report`) |
 
 `data-parity report RUN_DIR [--out FILE]` re-renders `parity.md` from a saved run directory (`parity.json`, `p1_A.txt`, `p1_B.txt`) without calling dbt; exit 2 if they are missing. A run made by an older version holds an oldest-N sample, so its re-rendered "spread evenly" sentence is inaccurate: only a fresh run gives a real sample.
 

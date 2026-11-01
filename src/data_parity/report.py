@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import __version__
@@ -22,6 +23,14 @@ TABLE_MAX = 15       # rows of the bounded tables (columns, timeline)
 
 
 # ---------------------------------------------------------------------------------------------- helpers
+
+
+@dataclass
+class ReportStyle:
+    """What the Markdown report shows (every switch is a CLI option of `run` and `report`)."""
+    hint: bool = True        # a "To inspect" line per differing model        (--no-hint switches it off)
+    timeline: bool = True    # the per-month table of differing days          (--no-timeline)
+    technical: bool = False  # hash buckets + method details                  (--technical)
 
 
 def ascii_safe(s: str) -> str:
@@ -168,13 +177,17 @@ def diagnosis(m: ModelResult, la: str, lb: str) -> str:
         ranked = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
         if ranked:
             top, k = ranked[0]
-            share = "%s of %s" % ("{:,}".format(k), base_txt)
+            share = "%s of %s %s" % ("{:,}".format(k), "{:,}".format(base_n), _word(m, base_n))
             if len(ranked) == 1:
                 s += ", all in `%s` (%s)" % (top, share)
             elif k >= 0.6 * len(attributed):
                 s += ", concentrated in `%s` (%s)" % (top, share)
             else:
-                s += ", spread over %d columns (mostly `%s`, %s)" % (len(ranked), top, share)
+                names = ", ".join("`%s`" % c for c, _ in ranked[:5]) + (", ..." if len(ranked) > 5 else "")
+                if all(n_ == k for _, n_ in ranked):
+                    s += ", over %d columns (%s), one each (%s)" % (len(ranked), names, share)
+                else:
+                    s += ", over %d columns (%s), most often `%s` (%s)" % (len(ranked), names, top, share)
         elif any(not p.drilled for p in hashp):
             s += " (columns not attributed: none of these %ss was sampled)" % unit
         bits.append(s)
@@ -344,7 +357,22 @@ def inline_parts(ordered: List[PartDiff], limit: int) -> List[PartDiff]:
     return sorted(pick, key=lambda p: pkey(p.partition))
 
 
-def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str]:
+def _hint(m: ModelResult, r: RunResult) -> List[str]:
+    """One actionable line: which rows to look at, in which table, on which side."""
+    la, lb = r.label_a, r.label_b
+    match = "matching rows on `%s`" % m.pk if m.pk and m.pk != "none" else "comparing whole rows"
+    if m.parts:
+        first = sorted(m.parts, key=lambda p: pkey(p.partition))[0]
+        where = " for the %s `%s`" % (unit_of(m), esc(first.partition))
+        cols = first.columns
+    else:
+        where, cols = "", m.table_columns
+    look = " Look at the column%s %s." % ("" if len(cols) == 1 else "s", ", ".join("`%s`" % c for c in cols)) if cols else ""
+    return ["**To inspect**: compare table `%s` on %s and %s%s, %s.%s" % (esc(m.name), esc(la), esc(lb), where, match, look), ""]
+
+
+def _model_section(m: ModelResult, r: RunResult, top: Optional[int], style: Optional[ReportStyle] = None) -> List[str]:
+    style = style or ReportStyle()
     la, lb = r.label_a, r.label_b
     out = ["### \u274c `%s`" % m.name, ""]
     if m.structure_kind in ("only_a", "only_b"):
@@ -355,14 +383,16 @@ def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str
     if m.verdict == "structure":
         return out + _structure_section(m, r)
     facts = ["rows: %s = %s, %s = %s (\u0394 %s)" % (la, num(m.rows_a), lb, num(m.rows_b), signed(m.delta)),
-             "primary key: %s" % ("none (buckets come from the full-row hash)" if m.pk == "none" else "`%s`" % m.pk)]
+             "primary key: %s" % (("none (buckets come from the full-row hash)" if style.technical else "none") if m.pk == "none" else "`%s`" % m.pk)]
     if m.parts:
         facts.append("partitions differing: **%s of %s** (%s)" % ("{:,}".format(len(m.parts)), "{:,}".format(m.partitions_total), pct(len(m.parts), m.partitions_total)))
-    facts += ["note: %s" % n for n in m.notes]
+    facts += ["note: %s" % n for n in m.notes if style.technical or "bucket" not in n]
     if m.comment:
         facts.append(m.comment)
     out += ["- " + f for f in facts] + [""]
-    if m.pk == "none":
+    if style.hint:
+        out += _hint(m, r)
+    if m.pk == "none" and style.technical:
         out += ["No primary key: a changed row appears in TWO buckets (old and new version), so columns are compared over the "
                 "whole partition, not per bucket.", ""]
 
@@ -398,8 +428,9 @@ def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str
         out.append("")
 
         ordered = sorted(m.parts, key=lambda p: pkey(p.partition))
-        out.append("**Timeline**: first differing %s `%s`, last `%s`." % (unit, esc(ordered[0].partition), esc(ordered[-1].partition)))
-        tl = timeline(m)
+        if len(ordered) > 1:
+            out.append("**Timeline**: first differing %s `%s`, last `%s`." % (unit, esc(ordered[0].partition), esc(ordered[-1].partition)))
+        tl = timeline(m) if style.timeline and len(ordered) > 1 else []
         if tl:
             out += ["", "| period | differing | of | share of the period | |", "|---|--:|--:|--:|---|"]
             top_share = max((d / t if t else 0) for _, d, t in tl) or 1
@@ -420,14 +451,19 @@ def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str
                 len(shown), "{:,}".format(len(ordered)), unit, n_drilled, "{:,}".format(m.sampled), len(shown) - n_drilled)
         else:
             title = "**%d of %s differing %ss, spread evenly from first to last.**" % (len(shown), "{:,}".format(len(ordered)), unit)
-        out += [title, "", "| partition | what | rows %s | rows %s | buckets | columns |" % (esc(la), esc(lb)), "|---|---|--:|--:|---|---|"]
-        for p in shown:
-            out.append("| %s | %s | %s | %s | %s | %s |" % (esc(p.partition), what(p.kind, esc(la), esc(lb)), num(p.rows_a), num(p.rows_b), esc(bucket_cell(p)), esc(column_cell(p))))
+        if style.technical:
+            out += [title, "", "| partition | what | rows %s | rows %s | buckets | columns |" % (esc(la), esc(lb)), "|---|---|--:|--:|---|---|"]
+            for p in shown:
+                out.append("| %s | %s | %s | %s | %s | %s |" % (esc(p.partition), what(p.kind, esc(la), esc(lb)), num(p.rows_a), num(p.rows_b), esc(bucket_cell(p)), esc(column_cell(p))))
+        else:
+            out += [title, "", "| partition | what | rows %s | rows %s | columns |" % (esc(la), esc(lb)), "|---|---|--:|--:|---|"]
+            for p in shown:
+                out.append("| %s | %s | %s | %s | %s |" % (esc(p.partition), what(p.kind, esc(la), esc(lb)), num(p.rows_a), num(p.rows_b), esc(column_cell(p))))
         out.append("")
         if len(ordered) > INLINE_MAX:
             out += ["Only %d of the %s differing %ss are listed. The complete list is in `parity.json` in the run directory (aggregates only)." % (len(shown), "{:,}".format(len(ordered)), unit), ""]
     else:
-        if m.bucket_diffs:
+        if m.bucket_diffs and style.technical:
             out += ["**Differing buckets**", "", "| bucket | what | rows %s | rows %s |" % (esc(la), esc(lb)), "|---|---|--:|--:|"]
             for b, k, ra, rb in m.bucket_diffs:
                 out.append("| %s | %s | %s | %s |" % (esc(b), what(k, esc(la), esc(lb)), num(ra), num(rb)))
@@ -435,10 +471,11 @@ def _model_section(m: ModelResult, r: RunResult, top: Optional[int]) -> List[str
     return out
 
 
-def render_markdown(r: RunResult) -> str:
+def render_markdown(r: RunResult, style: Optional[ReportStyle] = None) -> str:
+    style = style or ReportStyle()
     la, lb = r.label_a, r.label_b
     o = r.options
-    L: List[str] = ["# Parity report", ""]
+    L: List[str] = ["# Parity report: %s vs %s" % (esc(la), esc(lb)), ""]
     banner = {
         "identical": "**Identical**: all %d model%s match on both engines." % (len(r.models), "" if len(r.models) == 1 else "s"),
         "identical_scoped": "**Identical on a limited scope** (%s). This says nothing about the data outside that scope." % o.scope_text,
@@ -450,7 +487,7 @@ def render_markdown(r: RunResult) -> str:
           "| Date | %s |" % esc(r.started),
           "| Engine A | `%s` (dbt target `%s`) |" % (esc(la), esc(r.target_a)),
           "| Engine B | `%s` (dbt target `%s`) |" % (esc(lb), esc(r.target_b)),
-          "| Compared | counts and sums of per-row hashes, by partition, then by hash bucket (%d buckets), then by column |" % o.buckets,
+          "| Compared | row counts and a fingerprint of every row, per partition, then per column (no data leaves the warehouse) |",
           "| Scope | %s |" % esc(_scope_line(r)),
           "| Models | %s |" % (esc(", ".join(o.models)) if o.models else ("every tagged model (%d)" % len(r.models) if r.models else "every tagged model"))]
     L.append("")
@@ -460,13 +497,12 @@ def render_markdown(r: RunResult) -> str:
         if r.error_detail:
             L += ["```"] + r.error_detail + ["```", ""]
     else:
-        L += ["## Not checked", ""] + ["- " + x for x in not_checked(r)] + [""]
         L += ["## Overview", ""] + _overview(r) + [""]
         diff = [m for m in r.models if m.is_diff]
         if diff:
             L += ["## Differences", ""]
             for m in diff:
-                L += _model_section(m, r, o.detail)
+                L += _model_section(m, r, o.detail, style)
         same = [m for m in r.models if not m.is_diff]
         if same:
             L += ["## Identical models", ""]
@@ -478,14 +514,22 @@ def render_markdown(r: RunResult) -> str:
                 L.append("- +%d more identical models" % (len(same) - TABLE_MAX))
             L.append("")
 
+    if r.status != "error":
+        L += ["## Not checked", ""] + ["- " + x for x in not_checked(r)] + [""]
     cmd = r.command or "data-parity run"
     L += ["## How to reproduce", "", "```", cmd, "```", "",
           "Tool: data-parity %s. Exit codes: 0 identical, 1 differences, 2 error." % __version__, "",
-          "**What this proves, and what it does not.** Each engine computes, per partition, the row count and the sum of "
-          "per-row hashes (two independent hash sums); only these aggregates are compared, no row leaves the warehouse. "
-          "Equal aggregates mean the tables are equal up to a hash collision or errors that cancel exactly inside a sum "
-          "(probability about 2^-24 per sum for a single change). It does not check anything outside the scope above, "
-          "excluded columns, or the meaning of the data.", ""]
+          "**Limits.** Identical means identical on what was compared (see the scope and \"Not checked\"); "
+          "it does not look at the meaning of the data. A difference this small could in theory go unseen only by a "
+          "rare hash collision (about 1 in 16 million per change)."]
+    if style.technical:
+        L += ["", "## Technical details", "",
+              "- Each engine computes, per partition, the row count and the sum of per-row hashes (two independent sums); "
+              "only these aggregates are compared.",
+              "- Differing partitions are then split into %d hash buckets to find which rows' group differs, then compared "
+              "column by column." % o.buckets,
+              "- Without a primary key a changed row appears in two buckets (old and new version)."]
+    L.append("")
     return "\n".join(L).rstrip("\n") + "\n"
 
 

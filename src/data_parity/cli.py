@@ -19,7 +19,7 @@ from . import __version__
 from .drill import Options, ParityError, RunResult, compare, conformance, parse_section, parse_sections, pkey
 from .envfile import load_env_file
 from .mapping import MappingError, load_mapping
-from .report import (ascii_safe, join_command, render_json, render_markdown,
+from .report import (ReportStyle, ascii_safe, join_command, render_json, render_markdown,
                      terminal_summary)
 from .runner import Side
 
@@ -63,6 +63,9 @@ run options:
   --report FILE             Markdown report path (default: <out>/run-<timestamp>/parity.md);
                             parity.json stays in the run directory
   --json FILE               also write a machine-readable result
+  --no-hint                 leave out the "To inspect" line of each differing model
+  --no-timeline             leave out the per-month table of differing days
+  --technical               also show hash buckets and the method details
 
 report options:
   data-parity report RUN_DIR [--out FILE]   FILE defaults to RUN_DIR/parity.md
@@ -157,6 +160,7 @@ def build_parser(cmd: str) -> argparse.ArgumentParser:
                        help="which side is the legacy one, the other being the migration target (default b); only words the report")
         p.add_argument("--report", metavar="FILE", help="Markdown report path")
         p.add_argument("--json", metavar="FILE", help="machine-readable result path")
+        _add_style_options(p)
     return p
 
 
@@ -180,9 +184,19 @@ def write_text(path: Path, text: str) -> None:
         fh.write(text)
 
 
-def write_report(report_path: Path, result: RunResult) -> None:
+def _add_style_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--no-hint", action="store_true", help="report: leave out the 'To inspect' line of each differing model")
+    p.add_argument("--no-timeline", action="store_true", help="report: leave out the per-month table of differing days")
+    p.add_argument("--technical", action="store_true", help="report: also show hash buckets and the method details")
+
+
+def _style(args: argparse.Namespace) -> ReportStyle:
+    return ReportStyle(hint=not args.no_hint, timeline=not args.no_timeline, technical=args.technical)
+
+
+def write_report(report_path: Path, result: RunResult, style: Optional[ReportStyle] = None) -> None:
     """Write the Markdown report."""
-    write_text(report_path, render_markdown(result))
+    write_text(report_path, render_markdown(result, style))
 
 
 def eprint(msg: str = "") -> None:
@@ -291,7 +305,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
     report_path = Path(args.report).resolve() if args.report else run_dir / "parity.md"
     try:
-        write_report(report_path, result)
+        write_report(report_path, result, _style(args))
         if args.json:
             write_text(Path(args.json).resolve(), render_json(result))
         else:
@@ -323,6 +337,7 @@ def _report(argv: List[str]) -> int:
                                 description="Re-render parity.md from a saved run directory, without dbt.")
     p.add_argument("run_dir", metavar="RUN_DIR", help="a run directory (parity.json, p1_A.txt, p1_B.txt...)")
     p.add_argument("--out", metavar="FILE", help="Markdown report path (default: RUN_DIR/parity.md)")
+    _add_style_options(p)
     args = p.parse_args(argv)
     d = Path(args.run_dir)
     need = ["parity.json", "p1_A.txt", "p1_B.txt"]
@@ -344,7 +359,7 @@ def _report(argv: List[str]) -> int:
         return _fail("cannot read the run directory %s: %s" % (d, getattr(exc, "message", exc)))
     out = Path(args.out).resolve() if args.out else d.resolve() / "parity.md"
     try:
-        write_report(out, result)
+        write_report(out, result, _style(args))
     except OSError as exc:
         return _fail("cannot write the report: %s" % exc)
     oprint("report: %s" % out)

@@ -18,13 +18,19 @@
   {%- do data_parity_guard_target() -%}
   {#- sort by lower(name) explicitly -#}
   {%- set by_name = {} -%}
-  {%- for c in columns -%}{%- do by_name.update({(c['name'] | lower): c}) -%}{%- endfor -%}
+  {%- for c in columns -%}
+    {%- set key = data_parity_norm_name(c['name']) | trim -%}
+    {%- if key in by_name -%}
+      {{ exceptions.raise_compiler_error("data_parity: columns '" ~ by_name[key]['name'] ~ "' and '" ~ c['name'] ~ "' are the same column once normalized (" ~ key ~ ")") }}
+    {%- endif -%}
+    {%- do by_name.update({key: c}) -%}
+  {%- endfor -%}
   {%- set pieces = [] -%}
   {%- for key in (by_name.keys() | list | sort) -%}
     {%- set c = by_name[key] -%}
     {%- set q = adapter.quote(c['name']) -%}
     {%- set canon = data_parity_canonical(q, c['data_type']) | trim -%}
-    {%- set lit_name = "'" ~ (c['name'] | lower | replace("'", "''")) -%}
+    {%- set lit_name = "'" ~ key -%}
     {%- do pieces.append("case when " ~ q ~ " is null then " ~ lit_name ~ ":N' else " ~ lit_name ~ ":' || cast(length(" ~ canon ~ ") as " ~ data_parity_string_type() ~ ") || ':' || " ~ canon ~ " end") -%}
   {%- endfor -%}
   {{- pieces | join(" || '|' || ") -}}

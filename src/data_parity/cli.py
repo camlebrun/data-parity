@@ -9,8 +9,8 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
-import tempfile
 import traceback
 from pathlib import Path
 from typing import List, Optional
@@ -18,7 +18,8 @@ from typing import List, Optional
 from . import __version__
 from .drill import Options, ParityError, RunResult, compare, conformance, parse_section, parse_sections, pkey
 from .envfile import load_env_file
-from .report import (ascii_safe, join_command, render_json, render_markdown,
+from .mapping import MappingError, load_mapping
+from .report import (ReportStyle, ascii_safe, join_command, render_json, render_markdown,
                      terminal_summary)
 from .runner import Side
 
@@ -41,6 +42,9 @@ common options:
   --project DIR             dbt project directory (default: current directory)
   --project-b DIR           project directory of side B, if different
   --profiles-dir-a/-b DIR   dbt profiles directory per side
+  --schema-a/-b [DB.]SCHEMA table of each model is read in this schema instead of the project's ref()
+  --mapping-a/-b FILE       `model: [db.]schema.table` lines; wins over --schema-a/-b
+  --label-a/-b TEXT         side names in the report (default: the targets)
 
 run options:
   --as-of YYYY-MM-DD        exclude partitions on or after this date (freshness gap is not a content gap)
@@ -48,12 +52,20 @@ run options:
   --buckets N               hash buckets per partition (default 256)
   --drill-limit N           max partitions drilled per model (default 200); above it, the drilled
                             partitions are spread evenly from the first to the last differing one
+  --exclude-column COL      column left out on both sides, or MODEL.COL for one model (repeatable)
+  --exclude-prefix PREFIX   columns starting with PREFIX are left out (repeatable; meta_ always, see below)
+  --no-default-exclude      also compare the meta_ columns
+  --legacy a|b              which side is the legacy one (default b); words models found on one side only
   --detail N                partitions listed inline in the report (default and maximum 15; the
                             complete list is in parity.json)
   --out DIR                 work directory; a fresh run-<timestamp> sub-directory is created inside
+                            (default: ./parity_out in the dbt project, git-ignored there like any output)
   --report FILE             Markdown report path (default: <out>/run-<timestamp>/parity.md);
                             parity.json stays in the run directory
   --json FILE               also write a machine-readable result
+  --no-hint                 leave out the "To inspect" line of each differing model
+  --no-timeline             leave out the per-month table of differing days
+  --technical               also show hash buckets and the method details
 
 report options:
   data-parity report RUN_DIR [--out FILE]   FILE defaults to RUN_DIR/parity.md
@@ -86,6 +98,28 @@ def _as_of(text: str) -> str:
     return text
 
 
+def _namespace(text: str) -> str:
+    # same rule as the macros (data_parity_rc_check_part): [database.]schema, no quote / backslash / space
+    parts = text.strip().split(".")
+    if not 1 <= len(parts) <= 2 or not all(re.match(r"^[A-Za-z0-9_-]+$", x) for x in parts):
+        raise argparse.ArgumentTypeError("expected [database.]schema (letters, digits, _ and -), got %r" % text)
+    return text.strip()
+
+
+def _exclude_column(text: str) -> str:
+    v = text.strip()
+    if not v or v.startswith(".") or v.endswith(".") or "'" in v or '"' in v or "\\" in v:
+        raise argparse.ArgumentTypeError("expected COLUMN or MODEL.COLUMN, got %r" % text)
+    return v
+
+
+def _exclude_prefix(text: str) -> str:
+    v = text.strip()
+    if not v or "'" in v or '"' in v or "\\" in v:
+        raise argparse.ArgumentTypeError("expected a non-empty column prefix, got %r" % text)
+    return v
+
+
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--a", metavar="TARGET", help="dbt target of side A")
     p.add_argument("--b", metavar="TARGET", help="dbt target of side B")
@@ -95,6 +129,14 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project-b", metavar="DIR", help="dbt project directory of side B (default: same as --project)")
     p.add_argument("--profiles-dir-a", metavar="DIR", help="dbt profiles directory of side A")
     p.add_argument("--profiles-dir-b", metavar="DIR", help="dbt profiles directory of side B")
+    p.add_argument("--schema-a", type=_namespace, metavar="[DB.]SCHEMA",
+                   help="read the tables of side A in this schema instead of the project's own ref() (a mapping entry still wins)")
+    p.add_argument("--schema-b", type=_namespace, metavar="[DB.]SCHEMA",
+                   help="same for side B (e.g. the legacy Trino schema of a BigQuery repo)")
+    p.add_argument("--mapping-a", metavar="FILE", help="file `model: [db.]schema.table` giving the table read on side A (wins over --schema-a)")
+    p.add_argument("--mapping-b", metavar="FILE", help="same for side B")
+    p.add_argument("--label-a", metavar="TEXT", help="name of side A in the report (default: its target)")
+    p.add_argument("--label-b", metavar="TEXT", help="name of side B in the report (default: its target)")
     p.add_argument("--out", metavar="DIR", help="work directory; a fresh run-<timestamp> sub-directory is created inside")
 
 
@@ -109,8 +151,16 @@ def build_parser(cmd: str) -> argparse.ArgumentParser:
         p.add_argument("--buckets", type=_pos_int, default=256, metavar="N", help="hash buckets per partition (default 256)")
         p.add_argument("--drill-limit", type=_pos_int, default=200, metavar="N", help="max partitions drilled per model (default 200)")
         p.add_argument("--detail", type=_detail, default=15, metavar="N|all", help="partitions listed inline in the report (default and maximum 15)")
+        p.add_argument("--exclude-column", type=_exclude_column, action="append", default=[], metavar="COL|MODEL.COL",
+                       help="column left out of the comparison, in every model or only in MODEL (repeatable)")
+        p.add_argument("--exclude-prefix", type=_exclude_prefix, action="append", default=[], metavar="PREFIX",
+                       help="columns starting with PREFIX are left out (repeatable; `meta_` is always excluded unless --no-default-exclude)")
+        p.add_argument("--no-default-exclude", action="store_true", help="also compare the `meta_` columns")
+        p.add_argument("--legacy", choices=("a", "b"), default="b",
+                       help="which side is the legacy one, the other being the migration target (default b); only words the report")
         p.add_argument("--report", metavar="FILE", help="Markdown report path")
         p.add_argument("--json", metavar="FILE", help="machine-readable result path")
+        _add_style_options(p)
     return p
 
 
@@ -134,9 +184,19 @@ def write_text(path: Path, text: str) -> None:
         fh.write(text)
 
 
-def write_report(report_path: Path, result: RunResult) -> None:
+def _add_style_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--no-hint", action="store_true", help="report: leave out the 'To inspect' line of each differing model")
+    p.add_argument("--no-timeline", action="store_true", help="report: leave out the per-month table of differing days")
+    p.add_argument("--technical", action="store_true", help="report: also show hash buckets and the method details")
+
+
+def _style(args: argparse.Namespace) -> ReportStyle:
+    return ReportStyle(hint=not args.no_hint, timeline=not args.no_timeline, technical=args.technical)
+
+
+def write_report(report_path: Path, result: RunResult, style: Optional[ReportStyle] = None) -> None:
     """Write the Markdown report."""
-    write_text(report_path, render_markdown(result))
+    write_text(report_path, render_markdown(result, style))
 
 
 def eprint(msg: str = "") -> None:
@@ -170,9 +230,14 @@ def _resolve(args: argparse.Namespace, parser: argparse.ArgumentParser, cmd: str
             raise ParityError("no dbt_project.yml in %s (run from your dbt project or use --project)" % d)
     prof_a = Path(args.profiles_dir_a).resolve() if args.profiles_dir_a else None
     prof_b = Path(args.profiles_dir_b).resolve() if args.profiles_dir_b else None
-    sa = Side("A", a, a, args.dbt_a, project, prof_a)
-    sb = Side("B", b, b, args.dbt_b, project_b, prof_b)
-    base = Path(args.out).resolve() if args.out else Path(tempfile.gettempdir()) / "data-parity" / project.name
+    try:
+        rel_a = load_mapping(Path(args.mapping_a)) if args.mapping_a else {}
+        rel_b = load_mapping(Path(args.mapping_b)) if args.mapping_b else {}
+    except MappingError as exc:
+        raise ParityError(str(exc))
+    sa = Side("A", args.label_a or a, a, args.dbt_a, project, prof_a, args.schema_a, rel_a)
+    sb = Side("B", args.label_b or b, b, args.dbt_b, project_b, prof_b, args.schema_b, rel_b)
+    base = Path(args.out).resolve() if args.out else project / "parity_out"
     return sa, sb, base
 
 
@@ -180,13 +245,23 @@ def _command_line(cmd: str, args: argparse.Namespace, models: List[str]) -> str:
     argv = ["data-parity", cmd] + models + ["--a", args.a or "", "--b", args.b or ""]
     pairs = [("--dbt-a", args.dbt_a, "dbt"), ("--dbt-b", args.dbt_b, "dbt"), ("--project", args.project, None),
              ("--project-b", args.project_b, None), ("--profiles-dir-a", args.profiles_dir_a, None),
-             ("--profiles-dir-b", args.profiles_dir_b, None)]
+             ("--profiles-dir-b", args.profiles_dir_b, None), ("--schema-a", args.schema_a, None),
+             ("--schema-b", args.schema_b, None), ("--mapping-a", args.mapping_a, None),
+             ("--mapping-b", args.mapping_b, None), ("--label-a", args.label_a, None), ("--label-b", args.label_b, None)]
     if cmd == "run":
         pairs += [("--as-of", args.as_of, None), ("--last", args.last, None), ("--buckets", args.buckets, 256),
-                  ("--drill-limit", args.drill_limit, 200), ("--detail", "all" if args.detail is None else args.detail, 15)]
+                  ("--drill-limit", args.drill_limit, 200), ("--detail", "all" if args.detail is None else args.detail, 15),
+                  ("--legacy", args.legacy, "b")]
     for flag, val, default in pairs:
         if val is not None and val != default:
             argv += [flag, str(val)]
+    if cmd == "run":
+        for col in args.exclude_column:
+            argv += ["--exclude-column", col]
+        for pre in args.exclude_prefix:
+            argv += ["--exclude-prefix", pre]
+        if args.no_default_exclude:
+            argv.append("--no-default-exclude")
     return join_command(argv)
 
 
@@ -203,7 +278,9 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 models.append(piece)
     args.a, args.b = sa.target, sb.target
     opts = Options(models=models, buckets=args.buckets, as_of=args.as_of, last=args.last,
-                   drill_limit=args.drill_limit, detail=args.detail)
+                   drill_limit=args.drill_limit, detail=args.detail, exclude_columns=list(args.exclude_column),
+                   exclude_prefixes=list(args.exclude_prefix), no_default_exclude=args.no_default_exclude,
+                   legacy=args.legacy)
     try:
         run_dir = make_run_dir(base)
     except OSError as exc:
@@ -228,7 +305,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
     report_path = Path(args.report).resolve() if args.report else run_dir / "parity.md"
     try:
-        write_report(report_path, result)
+        write_report(report_path, result, _style(args))
         if args.json:
             write_text(Path(args.json).resolve(), render_json(result))
         else:
@@ -260,6 +337,7 @@ def _report(argv: List[str]) -> int:
                                 description="Re-render parity.md from a saved run directory, without dbt.")
     p.add_argument("run_dir", metavar="RUN_DIR", help="a run directory (parity.json, p1_A.txt, p1_B.txt...)")
     p.add_argument("--out", metavar="FILE", help="Markdown report path (default: RUN_DIR/parity.md)")
+    _add_style_options(p)
     args = p.parse_args(argv)
     d = Path(args.run_dir)
     need = ["parity.json", "p1_A.txt", "p1_B.txt"]
@@ -281,7 +359,7 @@ def _report(argv: List[str]) -> int:
         return _fail("cannot read the run directory %s: %s" % (d, getattr(exc, "message", exc)))
     out = Path(args.out).resolve() if args.out else d.resolve() / "parity.md"
     try:
-        write_report(out, result)
+        write_report(out, result, _style(args))
     except OSError as exc:
         return _fail("cannot write the report: %s" % exc)
     oprint("report: %s" % out)

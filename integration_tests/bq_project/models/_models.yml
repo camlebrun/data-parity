@@ -1,0 +1,22 @@
+version: 2
+models:
+  - name: fct_orders
+    config:
+      alias: fct_orders_dpv
+      tags: [data_parity]
+      event_time: order_date
+    columns:
+      - name: order_id
+        data_tests: [unique]
+  - name: dim_customers
+    config:
+      alias: dim_customers_dpv
+      tags: [data_parity]
+    columns:
+      - name: customer_id
+        data_tests: [unique]
+  - name: fct_events
+    config:
+      alias: fct_events_dpv
+      tags: [data_parity]
+      event_time: order_date

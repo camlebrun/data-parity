@@ -1,0 +1,223 @@
+{
+  "tool": "data-parity",
+  "verdict": "differences",
+  "exit_code": 1,
+  "verdict_text": "DIFFERENCES: 3 of 3 models differ",
+  "scope_limited": false,
+  "scope": "whole tables",
+  "started": "2026-11-01 22:05",
+  "side_a": {
+    "label": "bq",
+    "target": "bq"
+  },
+  "side_b": {
+    "label": "trino_b",
+    "target": "trino_b"
+  },
+  "options": {
+    "models": [],
+    "buckets": 256,
+    "as_of": null,
+    "last": null,
+    "drill_limit": 200,
+    "exclude_columns": [],
+    "exclude_prefixes": [],
+    "no_default_exclude": false,
+    "legacy": "b"
+  },
+  "command": "data-parity run --a bq --b trino_b --schema-b local.mart_parity_test_b",
+  "models_total": 3,
+  "models_differing": 3,
+  "only_in_a": [],
+  "only_in_b": [],
+  "schema_mismatch": [],
+  "errors": [],
+  "error_detail": [],
+  "models": [
+    {
+      "model": "dim_customers",
+      "verdict": "diff",
+      "rows_a": 5000,
+      "rows_b": 5000,
+      "delta_rows": 0,
+      "primary_key": "customer_id",
+      "partitioned": false,
+      "partitions_total": 0,
+      "partitions_differing": 0,
+      "partitions_not_drilled": 0,
+      "columns": [
+        {
+          "column": "city",
+          "affected": 1
+        }
+      ],
+      "differing_partitions": [],
+      "table_level_buckets": [
+        {
+          "bucket": "18",
+          "kind": "hash",
+          "rows_a": 26,
+          "rows_b": 26
+        }
+      ],
+      "structure_diff": [],
+      "structure_kind": "",
+      "columns_only_a": [],
+      "columns_only_b": [],
+      "column_type_diff": [],
+      "notes": [
+        "no partition column: table line only, buckets are taken table-wide (partition value *)"
+      ],
+      "scope": [],
+      "excluded_columns": "meta_loaded_at",
+      "comment": ""
+    },
+    {
+      "model": "fct_events",
+      "verdict": "diff",
+      "rows_a": 20010,
+      "rows_b": 20010,
+      "delta_rows": 0,
+      "primary_key": "none",
+      "partitioned": true,
+      "partitions_total": 120,
+      "partitions_differing": 1,
+      "partitions_not_drilled": 0,
+      "columns": [
+        {
+          "column": "value",
+          "affected": 1
+        }
+      ],
+      "differing_partitions": [
+        {
+          "partition": "2025-01-06",
+          "kind": "hash",
+          "rows_a": 168,
+          "rows_b": 168,
+          "drilled": true,
+          "differing_buckets": [
+            "16",
+            "50"
+          ],
+          "differing_columns": [
+            "value"
+          ]
+        }
+      ],
+      "table_level_buckets": [],
+      "structure_diff": [],
+      "structure_kind": "",
+      "columns_only_a": [],
+      "columns_only_b": [],
+      "column_type_diff": [],
+      "notes": [],
+      "scope": [],
+      "excluded_columns": "meta_loaded_at",
+      "comment": ""
+    },
+    {
+      "model": "fct_orders",
+      "verdict": "diff",
+      "rows_a": 200000,
+      "rows_b": 199998,
+      "delta_rows": -2,
+      "primary_key": "order_id",
+      "partitioned": true,
+      "partitions_total": 120,
+      "partitions_differing": 5,
+      "partitions_not_drilled": 0,
+      "columns": [
+        {
+          "column": "amount",
+          "affected": 1
+        },
+        {
+          "column": "price_float",
+          "affected": 1
+        },
+        {
+          "column": "status",
+          "affected": 1
+        }
+      ],
+      "differing_partitions": [
+        {
+          "partition": "2025-01-11",
+          "kind": "rows",
+          "rows_a": 1667,
+          "rows_b": 1664,
+          "drilled": true,
+          "differing_buckets": [
+            "29",
+            "208",
+            "233"
+          ],
+          "differing_columns": []
+        },
+        {
+          "partition": "2025-01-21",
+          "kind": "hash",
+          "rows_a": 1667,
+          "rows_b": 1667,
+          "drilled": true,
+          "differing_buckets": [
+            "74",
+            "246"
+          ],
+          "differing_columns": [
+            "amount"
+          ]
+        },
+        {
+          "partition": "2025-01-31",
+          "kind": "hash",
+          "rows_a": 1667,
+          "rows_b": 1667,
+          "drilled": true,
+          "differing_buckets": [
+            "125"
+          ],
+          "differing_columns": [
+            "status"
+          ]
+        },
+        {
+          "partition": "2025-02-20",
+          "kind": "hash",
+          "rows_a": 1667,
+          "rows_b": 1667,
+          "drilled": true,
+          "differing_buckets": [
+            "135",
+            "185"
+          ],
+          "differing_columns": [
+            "price_float"
+          ]
+        },
+        {
+          "partition": "2025-03-02",
+          "kind": "rows",
+          "rows_a": 1667,
+          "rows_b": 1668,
+          "drilled": true,
+          "differing_buckets": [
+            "48"
+          ],
+          "differing_columns": []
+        }
+      ],
+      "table_level_buckets": [],
+      "structure_diff": [],
+      "structure_kind": "",
+      "columns_only_a": [],
+      "columns_only_b": [],
+      "column_type_diff": [],
+      "notes": [],
+      "scope": [],
+      "excluded_columns": "meta_loaded_at",
+      "comment": ""
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 """End-to-end behaviour of the CLI against the fake dbt: exit codes, failure paths, scopes, files."""
 import json
 
+import pytest
+
 from conftest import base_models, mutate
 
 RUN = ["run", "--a", "ta", "--b", "tb"]
@@ -253,6 +255,158 @@ def test_last_and_as_of_text(env):
     two_sides(env)
     r = env.run(*RUN, "--last", "3", "--as-of", "2025-01-06")
     assert "(last 3 partitions / before 2025-01-06)" in r.out
+
+
+def test_schema_per_side_and_exclusions_are_sent_to_the_macro(env):
+    two_sides(env)
+    r = env.run(*RUN, "--schema-a", "ds_a", "--schema-b", "cat.sch_b", "--exclude-column", "amount",
+                "--exclude-column", "orders.status", "--exclude-prefix", "tmp_", "--no-default-exclude")
+    assert r.rc == 0, r.err
+    a, b = env.call_args()[:2]
+    assert a["rel_namespace"] == "ds_a" and b["rel_namespace"] == "cat.sch_b"
+    for args in (a, b):
+        assert args["exclude_columns"] == ["amount", "orders.status"]
+        assert args["exclude_prefixes"] == ["tmp_"] and args["no_default_exclude"] is True
+    opts = env.last_json()["options"]
+    assert opts["exclude_columns"] == ["amount", "orders.status"] and opts["no_default_exclude"] is True
+    cmd = env.last_json()["command"]
+    assert "--schema-b cat.sch_b" in cmd and "--exclude-column orders.status" in cmd and "--no-default-exclude" in cmd
+
+
+def test_defaults_send_no_namespace_nor_exclusion(env):
+    two_sides(env)
+    assert env.run(*RUN).rc == 0
+    for args in env.call_args()[:2]:
+        assert not {"rel_namespace", "exclude_columns", "exclude_prefixes", "no_default_exclude"} & set(args)
+
+
+def test_schema_only_on_one_side(env):
+    two_sides(env)
+    assert env.run(*RUN, "--schema-b", "legacy").rc == 0
+    a, b = env.call_args()[:2]
+    assert "rel_namespace" not in a and b["rel_namespace"] == "legacy"
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--schema-a", ""), ("--schema-a", "a.b.c"), ("--schema-b", "bad'name"), ("--schema-b", "a b"),
+    ("--exclude-column", ""), ("--exclude-column", "  "), ("--exclude-column", ".col"), ("--exclude-column", "orders."),
+    ("--exclude-column", 'a"b'), ("--exclude-prefix", ""), ("--exclude-prefix", "a\\b"),
+])
+def test_invalid_schema_and_exclusion_values_are_rejected(env, flag, value):
+    two_sides(env)
+    r = env.run(*RUN, flag, value)
+    assert r.rc == 2 and "expected" in r.err
+    assert env.calls() == []  # rejected before any dbt call
+
+
+def one_sided(env, only_a=None, only_b=None):
+    a, b = base_models(), base_models()
+    if only_a:
+        del b[only_a]
+    if only_b:
+        del a[only_b]
+    two_sides(env, b, a)
+
+
+def test_model_only_in_the_target_side(env):
+    one_sided(env, only_a="events")
+    r = env.run(*RUN, "--label-a", "bq", "--label-b", "trino")           # legacy is B by default
+    assert r.rc == 1
+    j = env.last_json()
+    assert j["only_in_a"] == ["events"] and j["only_in_b"] == [] and j["schema_mismatch"] == []
+    ev = {m["model"]: m for m in j["models"]}["events"]
+    assert ev["structure_kind"] == "only_a" and ev["verdict"] == "structure"
+    assert "only in the target side bq (no legacy counterpart)" in r.out
+    md = env.last_report()
+    assert "only in the target side bq (no legacy counterpart)" in md and "| `events` | ❌ only in target |" in md
+
+
+def test_model_only_in_the_legacy_side(env):
+    one_sided(env, only_b="events")
+    r = env.run(*RUN, "--label-a", "bq", "--label-b", "trino")
+    assert r.rc == 1 and env.last_json()["only_in_b"] == ["events"]
+    assert "only in the legacy side trino (not migrated yet)" in r.out
+    assert "| `events` | ❌ only in legacy |" in env.last_report()
+
+
+def test_legacy_option_swaps_the_wording(env):
+    one_sided(env, only_a="events")
+    r = env.run(*RUN, "--label-a", "trino", "--label-b", "bq", "--legacy", "a")
+    assert "only in the legacy side trino (not migrated yet)" in r.out
+    j = env.last_json()
+    assert j["options"]["legacy"] == "a" and "--legacy a" in j["command"]
+    assert j["side_a"]["label"] == "trino" and j["side_b"]["target"] == "tb"
+
+
+def test_schema_mismatch_names_the_columns(env):
+    def f(m):
+        m["orders"]["cols"].append("loaded_at")
+        for r in m["orders"]["rows"]:
+            r.append("x")
+    two_sides(env, mutate(base_models(), f))        # B has the extra column
+    r = env.run(*RUN, "--label-a", "bq", "--label-b", "trino")
+    assert r.rc == 1
+    j = env.last_json()
+    o = {m["model"]: m for m in j["models"]}["orders"]
+    assert o["structure_kind"] == "schema" and o["columns_only_b"] == ["loaded_at"] and o["columns_only_a"] == []
+    assert j["schema_mismatch"] == ["orders"] and o["rows_a"] is not None
+    assert "schema mismatch (only in trino: loaded_at)" in r.out
+    md = env.last_report()
+    assert "columns only in trino: `loaded_at`" in md and "| `orders` | ❌ schema mismatch |" in md
+
+
+def test_unpartitioned_model_is_reported_when_a_scope_cannot_apply(env):
+    two_sides(env)
+    r = env.run(*RUN, "--last", "2")
+    assert r.rc == 0
+    assert "No partition scope applies** to `customers`" in env.last_report()
+    env.run(*RUN)
+    assert "No partition scope applies" not in env.last_report()
+
+
+def test_mapping_files_are_sent_per_side(env, tmp_path):
+    two_sides(env)
+    mp = tmp_path / "b.yml"
+    mp.write_text("# renamed on the legacy side\norders: cat.sch.orders_v2   # trailing\ncustomers: sch.cust\n", encoding="utf-8")
+    assert env.run(*RUN, "--mapping-b", str(mp)).rc == 0
+    a, b = env.call_args()[:2]
+    assert "relations" not in a
+    assert b["relations"] == {"orders": "cat.sch.orders_v2", "customers": "sch.cust"}
+    assert "--mapping-b" in env.last_json()["command"]
+
+
+@pytest.mark.parametrize("text", ["orders", "orders: ", "orders: a.b.c.d", "orders: bad'q.t", "o rders: s.t", "orders: s.t\norders: s.u"])
+def test_invalid_mapping_file_is_rejected_before_dbt(env, tmp_path, text):
+    two_sides(env)
+    mp = tmp_path / "m.yml"
+    mp.write_text(text, encoding="utf-8")
+    r = env.run(*RUN, "--mapping-a", str(mp))
+    assert r.rc == 2 and "m.yml:" in r.err
+    assert env.calls() == []
+
+
+def test_missing_mapping_file_is_an_error(env, tmp_path):
+    two_sides(env)
+    r = env.run(*RUN, "--mapping-b", str(tmp_path / "nope.yml"))
+    assert r.rc == 2 and "cannot read the mapping file" in r.err and env.calls() == []
+
+
+def test_report_rereads_a_run_saved_before_the_structure_kinds(env):
+    one_sided(env, only_a="events")
+    assert env.run(*RUN).rc == 1
+    d = env.run_dirs()[-1]
+    data = json.loads((d / "parity.json").read_text(encoding="utf-8"))
+    for k in ("only_in_a", "only_in_b", "schema_mismatch"):
+        del data[k]
+    for k in ("exclude_columns", "exclude_prefixes", "no_default_exclude", "legacy"):
+        del data["options"][k]
+    for m in data["models"]:
+        for k in ("structure_kind", "columns_only_a", "columns_only_b", "column_type_diff"):
+            del m[k]
+    (d / "parity.json").write_text(json.dumps(data), encoding="utf-8")
+    r = env.run("report", str(d), out=False, fake=False)
+    assert r.rc == 0, r.err                  # `report` only re-renders; the verdict does not set its exit code
+    assert "model present only on side A" in (d / "parity.md").read_text(encoding="utf-8")
 
 
 def test_scope_difference_between_sides_is_structure(env):

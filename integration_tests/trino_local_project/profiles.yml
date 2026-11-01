@@ -1,0 +1,20 @@
+# Trino catalog `local` (memory connector, Docker dp-trino on :18080; add it once with
+# `echo connector.name=memory > /etc/trino/catalog/local.properties` + restart, see README_bq_trino.md).
+# trino_a = reference copy (schema mart_parity_test), trino_b = corrupted copy (mart_parity_test_b),
+# both loaded by ../load_trino.py. The models are views <name>_dpv over them.
+dp_trino_local:
+  target: trino_a
+  outputs:
+    trino_a: &base
+      type: trino
+      method: none
+      user: dbt
+      host: localhost
+      port: 18080
+      database: local
+      schema: mart_parity_test
+      http_scheme: http
+      threads: 1
+    trino_b:
+      <<: *base
+      schema: mart_parity_test_b

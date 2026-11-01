@@ -9,7 +9,7 @@ from conftest import base_models, mutate
 
 from data_parity.cli import main, write_report
 from data_parity.drill import Options, compare, spread_sample
-from data_parity.report import inline_parts, render_json, render_markdown
+from data_parity.report import ReportStyle, inline_parts, render_json, render_markdown
 from data_parity.runner import CallResult, Side
 
 RUN = ["run", "--a", "ta", "--b", "tb"]
@@ -158,7 +158,7 @@ def test_inline_rows_are_all_drilled_and_show_columns(tmp_path):
     rows = inline_rows(md)
     assert len(rows) == 15
     for r in rows:
-        assert r[4] not in ("", "not sampled") and r[5] not in ("", "not sampled", "not attributed"), r
+        assert r[-1] not in ("", "not sampled", "not attributed"), r
     drilled = [p.partition for p in res.models[0].parts if p.drilled]
     assert rows[0][0] == drilled[0] and rows[-1][0] == drilled[-1]
     assert set(r[0] for r in rows) <= set(drilled)
@@ -174,8 +174,8 @@ def test_inline_fills_with_unsampled_when_few_drilled(tmp_path):
     md = (run_dir / "parity.md").read_text(encoding="utf-8")
     rows = inline_rows(md)
     assert len(rows) == 15
-    assert sum(1 for r in rows if r[5] == "not sampled") == 10
-    assert sum(1 for r in rows if r[5] != "not sampled") == 5
+    assert sum(1 for r in rows if r[-1] == "not sampled") == 10
+    assert sum(1 for r in rows if r[-1] != "not sampled") == 5
     assert len({len(r) for r in rows}) == 1
     assert "5 of the 6,000 sampled" not in md and "completed by 10 spread evenly and not sampled" in md
 
@@ -249,3 +249,20 @@ def test_cli_run_then_report_roundtrip(env):
     rep = env.tmp / "rep" / "mine.md"
     assert env.run("run", "orders", *RUN[1:], "--report", str(rep)).rc == 1
     assert [p.name for p in rep.parent.iterdir()] == ["mine.md"]
+
+
+# ---------------------------------------------------------------------------------------------- report style options
+
+
+def test_report_style_options(tmp_path):
+    res, _, _ = run_synthetic(tmp_path, 400, 120, limit=30)
+    default = render_markdown(res)
+    assert "**To inspect**" in default and "**Timeline**" in default and "| buckets |" not in default
+    assert "## Technical details" not in default
+    # the "Not checked" section comes after the results, the overview right after the header
+    assert default.index("## Overview") < default.index("## Differences") < default.index("## Not checked")
+    tech = render_markdown(res, ReportStyle(technical=True))
+    assert "| buckets |" in tech and "## Technical details" in tech
+    assert "**To inspect**" not in render_markdown(res, ReportStyle(hint=False))
+    no_tl = render_markdown(res, ReportStyle(timeline=False))
+    assert "| period |" not in no_tl and "| period |" in default

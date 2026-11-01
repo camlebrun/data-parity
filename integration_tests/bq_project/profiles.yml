@@ -1,0 +1,27 @@
+# Real BigQuery (no emulator). Auth: gcloud application-default credentials (method: oauth).
+# Tables <project>.mart_parity_test.{fct_orders,dim_customers,fct_events} are created by ../load_bq.py;
+# the models are views <name>_dpv over them (same pattern as trino_local_project).
+dp_bq:
+  target: bq
+  outputs:
+    bq:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('BQ_PROJECT') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'mart_parity_test') }}"
+      location: EU
+      threads: 1
+    # Migration form: the same profile also knows the Trino side (tables read with --schema-b local.<dataset>)
+    trino_a: &trino
+      type: trino
+      method: none
+      user: dbt
+      host: localhost
+      port: 18080
+      database: local
+      schema: mart_parity_test
+      http_scheme: http
+      threads: 1
+    trino_b:
+      <<: *trino
+      schema: mart_parity_test_b

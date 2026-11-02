@@ -31,8 +31,9 @@ def _cli(*argv):
 
 @pytest.fixture(scope="module")
 def built():
-    for t in ("engine_a", "engine_b"):
-        subprocess.run([BIN, "run", "--target", t], cwd=str(IT), check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # a fresh checkout has no dbt_packages/ (git-ignored): install the local package first, as the README says
+    for args in (["deps"], ["run", "--target", "engine_a"], ["run", "--target", "engine_b"]):
+        subprocess.run([BIN, *args], cwd=str(IT), check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def test_expected_findings(built, tmp_path):

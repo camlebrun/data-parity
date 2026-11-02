@@ -9,7 +9,7 @@ description = "Prove that dbt models are identical on two engines, without movin
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
 classifiers = [
   "Programming Language :: Python :: 3",

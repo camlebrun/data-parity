@@ -76,6 +76,8 @@ def test_classify_package_not_installed():
     out = "[error] [JinjaError (dbt1501)]: Template not found for macro 'data_parity_reconcile'\n"
     assert "data_parity package is not installed" in classify_failure(out) and "dbt deps" in classify_failure(out)
     assert "dbt deps" in classify_failure("Compilation Error: 'data_parity_reconcile' is undefined")
+    core = "Compilation Error\n  dbt could not find a macro with the name 'data_parity_reconcile' in any package."
+    assert "data_parity package is not installed" in classify_failure(core)
 
 
 def test_classify_unresolvable_ref_names_the_model_and_file():

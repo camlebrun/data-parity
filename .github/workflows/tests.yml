@@ -1,0 +1,38 @@
+name: tests
+
+# Runs the whole suite, including the tests against a real dbt (dbt-core + DuckDB, the bed in integration_tests/),
+# on Linux, macOS and Windows. Five jobs: the oldest and newest supported Python where the OS matters most.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.10"}
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: macos-latest, python: "3.12"}
+          - {os: windows-latest, python: "3.10"}
+          - {os: windows-latest, python: "3.13"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the package, pytest and a real dbt with DuckDB
+        run: python -m pip install -e ".[dev]" dbt-duckdb
+      - name: Build the two DuckDB engines of the test bed
+        run: python integration_tests/generate.py
+      - name: Run the tests (the dbt ones included)
+        env:
+          DBT_CORE: dbt
+        run: python -m pytest -q -ra

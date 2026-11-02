@@ -59,7 +59,8 @@ def extract_excluded(text: str) -> Dict[str, str]:
 
 _LOCATION = re.compile(r"(?:-->\s*|\(in\s+)([^\s:)]+(?::\d+)*)")
 _PKG_MISSING = re.compile(r"Template not found for macro 'data_parity_|macro 'data_parity_\w*' (?:is undefined|not found)"
-                          r"|'data_parity_\w*' is undefined", re.I)
+                          r"|'data_parity_\w*' is undefined"
+                          r"|could not find a macro with the name ['\"]data_parity_", re.I)       # dbt-core wording
 _OWN_ERROR = re.compile(r"(data_parity(?:_\w+)?: .+)$")
 _REF_MISSING = re.compile(r"Ref '([^']+)' not found|depends on a node named '([^']+)' which was not found", re.I)
 _PROFILE = re.compile(r"target '[^']+' not found in profile|Could not find profile|profile '[^']+' not found", re.I)

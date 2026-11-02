@@ -17,7 +17,7 @@ ligne passent par des `EXCEPT` / jointures sur les lignes.
 
 ## 0. Pré-requis
 
-- Python 3.9 ou plus récent (aucune dépendance Python à installer).
+- Python 3.10 ou plus récent (aucune dépendance Python à installer).
 - dbt installé pour CHAQUE moteur (dbt Fusion ou dbt-core pour DuckDB et BigQuery ; **dbt-core seulement pour Trino**,
   Fusion ne supporte pas Trino). Les deux côtés peuvent utiliser des binaires dbt différents (`--dbt-a`, `--dbt-b`).
 - Des droits de lecture sur les tables, rien d'autre : le mode normal n'écrit rien (le cache est optionnel et
@@ -293,7 +293,7 @@ sortie et du fichier non vide).
 | Trino | testé sur Trino 484 dans Docker (catalogue memory), dbt-core seulement (Fusion ne supporte pas Trino) : conformance identique à DuckDB et BigQuery, reconcile DuckDB contre Trino, cache. **Non testé : un vrai cluster Trino** |
 | BigQuery | conformance en ligne (identique à DuckDB et Trino) et un vrai run manuel de `data-parity run` avec une table BigQuery en côté A contre une table DuckDB (lecture seule). Aucun test automatisé du dépôt ne couvre BigQuery. Le code du cache (`bigquery__`) n'a jamais tourné ; écritures du cache NON testées |
 | Windows | non testé (l'outil n'utilise aucun shell, mais n'a jamais tourné sur Windows) |
-| Python 3.9 | version minimale déclarée, non exécutée |
+| Python 3.10 à 3.13 | testés en CI (workflow tests), 3.10 est le minimum déclaré |
 
 ## 5. Windows : particularités
 

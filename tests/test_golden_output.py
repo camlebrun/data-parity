@@ -20,6 +20,7 @@ def normalise(text, env):
     """Replace the parts that change from one run to the next (temporary paths, run directory stamp)."""
     for root in {str(env.tmp), str(env.tmp.resolve())}:
         text = text.replace(root, "<TMP>")
+    text = re.sub(r"<TMP>\S*", lambda m: m.group(0).replace("\\", "/"), text)       # Windows paths use backslashes
     return re.sub(r"run-\d{8}-\d{6}(-\d+)?", "run-<STAMP>", text)
 
 

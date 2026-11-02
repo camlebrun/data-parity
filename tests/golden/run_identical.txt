@@ -1,0 +1,10 @@
+exit: 0
+--- stdout ---
+customers                ISO   (4 rows identical)
+events                   ISO   (6 rows identical)
+orders                   ISO   (18 rows identical)
+
+RESULT: ISO: all 3 models identical
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---
+data-parity: pass 1 (one grouped scan per side)

@@ -1,0 +1,67 @@
+exit: 0
+--- stdout ---
+data-parity v0.1.0
+Check that dbt models are identical on two engines, without moving data.
+
+usage: data-parity <command> [options]
+
+Quick start (in your dbt project):
+  $ data-parity run --a dev --b prod
+    compare every model tagged data_parity
+  $ data-parity report RUN_DIR
+    re-render the report of a saved run, no dbt call
+  $ data-parity conformance --a dev --b prod
+    check once that the row hash is portable between the engines
+
+Commands:
+  run [MODEL ...]  compare the models (every model tagged data_parity if none is given)
+                   e.g. data-parity run orders customers --a dev --b prod --last 30
+  report RUN_DIR   re-render parity.md from a saved run directory, without dbt
+                   e.g. data-parity report parity_out/run-<STAMP> --technical
+  conformance      check that the row hash is portable between the two engines
+                   e.g. data-parity conformance --a dev --b prod
+  help             show this help (also: data-parity <command> --help)
+
+Sides (run, conformance):
+  --a TARGET --b TARGET      dbt targets of side A and side B
+  --dbt-a BIN --dbt-b BIN    dbt binary per side (default: dbt)
+  --project DIR              dbt project directory (default: current directory)
+  --project-b DIR            project directory of side B, if different
+  --profiles-dir-a/-b DIR    dbt profiles directory per side
+  --schema-a/-b [DB.]SCHEMA  read each model's table in this schema instead of the project's ref()
+  --mapping-a/-b FILE        `model: [db.]schema.table` lines; wins over --schema-a/-b
+  --label-a/-b TEXT          side names in the report (default: the targets)
+
+Scope and cost (run):
+  --as-of YYYY-MM-DD  exclude partitions on or after this date (a freshness gap is not a content
+                      gap)
+  --last N            only the N latest partitions of each model (bounds the scan cost)
+  --buckets N         hash buckets per partition (default 256)
+  --drill-limit N     max partitions drilled per model (default 200); above it, the drilled
+                      partitions are spread evenly from the first to the last differing one
+
+Columns (run):
+  --exclude-column COL     column left out on both sides, or MODEL.COL for one model (repeatable)
+  --exclude-prefix PREFIX  columns starting with PREFIX are left out (repeatable; meta_ always is)
+  --no-default-exclude     also compare the meta_ columns
+  --legacy a|b             which side is the legacy one (default b); words models found on one side
+                           only
+
+Output (run, report):
+  --out DIR      work directory; a fresh run-<timestamp> sub-directory is created inside (default:
+                 ./parity_out in the dbt project)
+  --report FILE  Markdown report path (default: <out>/run-<timestamp>/parity.md); parity.json stays
+                 in the run directory
+  --json FILE    also write a machine-readable result
+  --detail N     partitions listed inline in the report (default and maximum 15; the complete list
+                 is in parity.json)
+  --no-hint      leave out the "To inspect" line of each differing model
+  --no-timeline  leave out the per-month table of differing days
+  --technical    also show hash buckets and the method details
+  --no-color     no colors in the terminal (NO_COLOR is honored too)
+
+Exit codes:
+  0 identical   1 differences   2 error
+
+Defaults can be stored in ./.data-parity.env (keys A, B and PROJECT_B only): A=dev  B=local
+--- stderr ---

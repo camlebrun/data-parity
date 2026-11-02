@@ -293,7 +293,7 @@ sortie et du fichier non vide).
 | Trino | testé sur Trino 484 dans Docker (catalogue memory), dbt-core seulement (Fusion ne supporte pas Trino) : conformance identique à DuckDB et BigQuery, reconcile DuckDB contre Trino, cache. **Non testé : un vrai cluster Trino** |
 | BigQuery | conformance en ligne (identique à DuckDB et Trino) et un vrai run manuel de `data-parity run` avec une table BigQuery en côté A contre une table DuckDB (lecture seule). Aucun test automatisé du dépôt ne couvre BigQuery. Le code du cache (`bigquery__`) n'a jamais tourné ; écritures du cache NON testées |
 | Windows | non testé (l'outil n'utilise aucun shell, mais n'a jamais tourné sur Windows) |
-| Python 3.10 à 3.14 | testés en CI (workflow tests), 3.10 est le minimum déclaré |
+| Python 3.10 à 3.13 | testés en CI (workflow tests), 3.10 est le minimum déclaré |
 
 ## 5. Windows : particularités
 

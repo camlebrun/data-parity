@@ -282,7 +282,7 @@ unrelated to reconcile's `as_of` (it only defines which partitions are closed). 
 | Trino | tested on Trino 484 in Docker (memory catalog) with dbt-core only (dbt Fusion does not support Trino): conformance byte-identical to DuckDB and BigQuery, reconcile DuckDB vs Trino, cache. Not tested: a real Trino cluster |
 | BigQuery | inline conformance (byte-identical to DuckDB and Trino) and one real manual run of `data-parity run` with a BigQuery table as side A against a DuckDB table (read-only). `integration_tests/test_bq_trino.sh` runs a real BigQuery dataset (prod-shaped tables, MONTH partitions) against Trino: conformance identical, iso on the same data, exactly the expected findings on the corrupted copy (see `integration_tests/README_bq_trino.md`); it needs a GCP project, so it is not part of CI. The cache `bigquery__` code was never run; **cache writes on BigQuery are untested** |
 | Windows | untested (the code avoids shells and POSIX-only calls, but it has never run there) |
-| Python | developed and tested on one recent Python 3; 3.10 is the declared minimum, run in CI from 3.10 to 3.14 (see the tests workflow) |
+| Python | developed and tested on one recent Python 3; 3.10 is the declared minimum, run in CI from 3.10 to 3.13, with a real dbt (see the tests workflow) |
 
 ## Honest limits
 

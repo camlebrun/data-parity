@@ -5,7 +5,7 @@ The package SHALL be published on PyPI under the name `data-parity`, and `pip in
 `pipx install data-parity` SHALL provide the `data-parity` command with the same behavior as `python -m data_parity`.
 
 #### Scenario: Install in a clean environment
-- **WHEN** a user runs `pipx install data-parity` in an environment with only Python 3.9 or newer
+- **WHEN** a user runs `pipx install data-parity` in an environment with only Python 3.10 or newer
 - **THEN** `data-parity help` exits 0 and prints the usage
 
 #### Scenario: Core has no third-party dependency

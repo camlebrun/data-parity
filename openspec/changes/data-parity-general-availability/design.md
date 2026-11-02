@@ -8,7 +8,7 @@ Current state (read from the repository):
 - All SQL lives in the dbt package (`dbt_package/macros/`: `canonical.sql`, `row_hash.sql`, `reconcile.sql`,
   `cache.sql`, `conformance.sql`, `portable.sql`). The Python never opens a warehouse connection: it runs
   `dbt run-operation` and parses `PARITY|` lines. This is why dbt is mandatory today.
-- `pyproject.toml`: version 0.1.0, MIT, `dependencies = []`, Python >= 3.9. There is no `.github/workflows`
+- `pyproject.toml`: version 0.1.0, MIT, `dependencies = []`, Python >= 3.10 (was 3.9, raised in PR #7). There is no `.github/workflows`
   directory: the cross-platform claim in the README has no CI proof, and nothing is published on PyPI.
 - A test session on real BigQuery vs Trino fixtures reproduced the ground truth exactly (5 differing days on
   `fct_orders`, column `city`, day 2025-01-06). That ground truth is the regression oracle for everything below.
@@ -71,7 +71,7 @@ message says when it cannot be enforced.
 ### D7. Releases through trusted publishing, driven by tags
 A tag-triggered workflow builds sdist and wheel and uploads with PyPI trusted publishing (no stored token). The
 workflow refuses when tag, package version and changelog disagree. A tests matrix (Linux, macOS, Windows; Python
-3.9 to the latest) gates the release. Changie fragments (already used by the owner) produce the changelog.
+3.10 to 3.13, with a real dbt-duckdb run of integration_tests/) gates the release. Changie fragments (already used by the owner) produce the changelog.
 
 ### D8. The benchmark is ground truth first
 `benchmarks/` generalizes `integration_tests/generate.py` and `expected_findings.md` into a machine-readable truth

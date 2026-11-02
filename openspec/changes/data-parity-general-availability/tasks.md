@@ -1,6 +1,6 @@
 ## 1. Distribution and CI (spec: pypi-distribution)
 
-- [ ] 1.1 Add `.github/workflows/tests.yml`: Linux, macOS, Windows × Python 3.9 to latest, running `pytest` (owner's go first, explain the workflow in 1-2 lines)
+- [ ] 1.1 Add `.github/workflows/tests.yml`: ubuntu 3.10 and 3.13, macOS 3.12, Windows 3.10 and 3.13, installing dbt-duckdb, building the DuckDB test bed and running `pytest` with `DBT_CORE` so the real-dbt tests run (written; PR #7 green, waiting for the merge)
 - [ ] 1.2 Add `.changie.yaml` (kinds Added/Changed/Fixed/Removed/Security) and `.changes/unreleased/`; generate `CHANGELOG.md` with `changie merge`
 - [ ] 1.2b Add a CI check: a fragment is required when `src/` or `dbt_package/` change and its YAML must load; `CHANGELOG.md` must equal `changie merge` output (workflow change: owner's go first)
 - [ ] 1.2c Write the changie fragments for the user-visible changes since the project start (batch them into `0.1.0` at release)

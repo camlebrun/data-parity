@@ -1,0 +1,23 @@
+exit: 1
+--- stdout ---
+customers                DIFF
+  rows        : 4 on both sides
+  table-level difference (no partition column)
+  columns     : city
+events                   DIFF
+  rows        : 6 on both sides
+  partitions  : 1 of 2 differ (2025-01-02 -> 2025-01-02)
+  nature      : 0 with missing/extra rows, 1 with changed values only
+  columns     : value (1)  [partitions with changed values: 1]
+orders                   DIFF
+  rows        : ta = 18, tb = 17 (delta -1)
+  partitions  : 3 of 6 differ (2025-01-02 -> 2025-01-05)
+  nature      : 1 with missing/extra rows, 2 with changed values only
+  columns     : amount (1), status (1)  [partitions with changed values: 2]
+
+RESULT: DIFFERENCES: 3 of 3 models differ
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---
+data-parity: pass 1 (one grouped scan per side)
+data-parity: pass 2 (buckets of the differing partitions: customers, events, orders)
+data-parity: pass 3 (columns of the buckets with equal rows but different hashes: customers, events, orders)

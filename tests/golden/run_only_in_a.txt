@@ -1,0 +1,10 @@
+exit: 1
+--- stdout ---
+customers                ISO   (4 rows identical)
+events                   DIFF  only in the target side ta (no legacy counterpart)
+orders                   ISO   (18 rows identical)
+
+RESULT: DIFFERENCES: 1 of 3 models differs
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---
+data-parity: pass 1 (one grouped scan per side)

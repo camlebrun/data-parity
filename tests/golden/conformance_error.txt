@@ -1,0 +1,7 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+data-parity: error: conformance run failed: side B (target tb): dbt produced no PARITY output (is the data_parity package installed? run `dbt deps`)
+  --- last log lines, side B ---
+  Nothing to see; the macro printed nothing
+data-parity: work files: <TMP>/out/run-<STAMP>

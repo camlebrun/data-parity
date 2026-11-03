@@ -575,3 +575,22 @@ def test_ascii_terminal_with_unicode_names(env):
     r = env.run(*RUN)
     r.out.encode("ascii")
     r.err.encode("ascii")
+
+
+# ---------------------------------------------------------------------------------------------- did you mean
+
+
+def test_misspelled_option_suggests_the_closest(env):
+    two_sides(env)
+    r = env.run(*RUN, "--schema-aa", "x")
+    assert r.rc == 2 and "unknown option --schema-aa, did you mean --schema-a?" in r.err
+
+
+def test_misspelled_command_suggests_the_closest(env):
+    r = env.run("conformence", out=False, fake=False)
+    assert r.rc == 2 and "did you mean 'conformance'?" in r.err
+
+
+def test_help_starts_with_the_quick_start(env):
+    r = env.run("help", out=False, fake=False)
+    assert r.out.index("Quick start") < r.out.index("Commands:") < r.out.index("Scope and cost")

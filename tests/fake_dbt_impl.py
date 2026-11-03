@@ -43,6 +43,9 @@ def main(argv):
         return 2
     with open(path, encoding="utf-8") as fh:
         world = json.load(fh)
+    if world.get("fail_text"):
+        print(world["fail_text"])
+        return world.get("fail_rc", 1)
     if world.get("fail_rc"):
         print("Database Error: connection refused")
         return world["fail_rc"]

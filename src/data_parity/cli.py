@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import json
 import os
 import re
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import List, Optional
@@ -22,60 +24,10 @@ from .mapping import MappingError, load_mapping
 from .report import (ReportStyle, ascii_safe, join_command, render_json, render_markdown,
                      terminal_summary)
 from .runner import Side
+from . import helpview, ui
 
 ENV_FILE = ".data-parity.env"
 
-TOP_HELP = """\
-usage: data-parity <command> [options]
-
-Check that dbt models are identical on two engines, without moving data.
-
-commands:
-  run [MODEL ...]   compare the models (every model tagged data_parity if none is given)
-  report RUN_DIR    re-render parity.md from a saved run directory (no dbt call)
-  conformance       check that the row hash is portable between the two engines
-  help              show this help (also: data-parity <command> --help)
-
-common options:
-  --a TARGET --b TARGET     dbt targets of side A and side B
-  --dbt-a BIN --dbt-b BIN   dbt binary per side (default: dbt)
-  --project DIR             dbt project directory (default: current directory)
-  --project-b DIR           project directory of side B, if different
-  --profiles-dir-a/-b DIR   dbt profiles directory per side
-  --schema-a/-b [DB.]SCHEMA table of each model is read in this schema instead of the project's ref()
-  --mapping-a/-b FILE       `model: [db.]schema.table` lines; wins over --schema-a/-b
-  --label-a/-b TEXT         side names in the report (default: the targets)
-
-run options:
-  --as-of YYYY-MM-DD        exclude partitions on or after this date (freshness gap is not a content gap)
-  --last N                  only the N latest partitions of each model (bounds the scan cost)
-  --buckets N               hash buckets per partition (default 256)
-  --drill-limit N           max partitions drilled per model (default 200); above it, the drilled
-                            partitions are spread evenly from the first to the last differing one
-  --exclude-column COL      column left out on both sides, or MODEL.COL for one model (repeatable)
-  --exclude-prefix PREFIX   columns starting with PREFIX are left out (repeatable; meta_ always, see below)
-  --no-default-exclude      also compare the meta_ columns
-  --legacy a|b              which side is the legacy one (default b); words models found on one side only
-  --detail N                partitions listed inline in the report (default and maximum 15; the
-                            complete list is in parity.json)
-  --out DIR                 work directory; a fresh run-<timestamp> sub-directory is created inside
-                            (default: ./parity_out in the dbt project, git-ignored there like any output)
-  --report FILE             Markdown report path (default: <out>/run-<timestamp>/parity.md);
-                            parity.json stays in the run directory
-  --json FILE               also write a machine-readable result
-  --no-hint                 leave out the "To inspect" line of each differing model
-  --no-timeline             leave out the per-month table of differing days
-  --technical               also show hash buckets and the method details
-
-report options:
-  data-parity report RUN_DIR [--out FILE]   FILE defaults to RUN_DIR/parity.md
-
-Defaults can be stored in ./.data-parity.env (keys A, B and PROJECT_B only):
-  A=dev
-  B=local
-
-Exit code: 0 identical, 1 differences, 2 error.
-"""
 
 
 def _pos_int(text: str) -> int:
@@ -140,9 +92,31 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out", metavar="DIR", help="work directory; a fresh run-<timestamp> sub-directory is created inside")
 
 
+def suggest(word: str, choices) -> Optional[str]:
+    """The closest valid spelling of ``word`` among ``choices``, or None."""
+    found = difflib.get_close_matches(word, list(choices), n=1, cutoff=0.6)
+    return found[0] if found else None
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse with a "did you mean" on unknown options."""
+
+    def error(self, message: str):
+        if message.startswith("unrecognized arguments:"):
+            hints = []
+            for tok in message.split(":", 1)[1].split():
+                if tok.startswith("--"):
+                    best = suggest(tok.split("=")[0], (o for o in self._option_string_actions if o.startswith("--")))
+                    if best:
+                        hints.append("unknown option %s, did you mean %s?" % (tok, best))
+            if hints:
+                message += "\n" + "\n".join(hints)
+        super().error(message)
+
+
 def build_parser(cmd: str) -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="data-parity %s" % cmd, add_help=True, allow_abbrev=False,
-                                description="Exit code: 0 identical, 1 differences, 2 error.")
+    p = _Parser(prog="data-parity %s" % cmd, add_help=True, allow_abbrev=False,
+                description="Exit code: 0 identical, 1 differences, 2 error.")
     _common(p)
     if cmd == "run":
         p.add_argument("models", nargs="*", metavar="MODEL", help="models to compare (default: every tagged model)")
@@ -188,6 +162,7 @@ def _add_style_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-hint", action="store_true", help="report: leave out the 'To inspect' line of each differing model")
     p.add_argument("--no-timeline", action="store_true", help="report: leave out the per-month table of differing days")
     p.add_argument("--technical", action="store_true", help="report: also show hash buckets and the method details")
+    p.add_argument("--no-color", action="store_true", help="terminal: never use colors (NO_COLOR is honored too)")
 
 
 def _style(args: argparse.Namespace) -> ReportStyle:
@@ -265,6 +240,14 @@ def _command_line(cmd: str, args: argparse.Namespace, models: List[str]) -> str:
     return join_command(argv)
 
 
+def _next_command(result: RunResult, run_dir: Path) -> str:
+    """The single most useful command after a finished run."""
+    if result.status == "identical_scoped":
+        # the verdict only covers a window: the useful step is the same run on everything
+        return re.sub(r" --(?:last|as-of) \S+", "", result.command)
+    return join_command(["data-parity", "report", str(run_dir), "--technical"])
+
+
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
         sa, sb, base = _resolve(args, parser, "run")
@@ -289,14 +272,27 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     def save(name: str, text: str) -> None:
         write_text(run_dir / name, text)
 
+    live = None
+    err_term = ui.detect(sys.stderr, no_color=getattr(args, "no_color", False))
+    if err_term.interactive:
+        live = ui.Progress(sys.stderr, err_term)
+
     def progress(msg: str) -> None:
-        eprint("data-parity: " + msg)
+        if live is not None:
+            live(msg)
+        else:
+            eprint("data-parity: " + msg)
 
     started = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    clock = time.monotonic()
     command = _command_line("run", args, models)
     try:
         result = compare(sa, sb, opts, progress=progress, save=save)
+        if live is not None:
+            live.close(ok=True)
     except ParityError as exc:
+        if live is not None:
+            live.close(ok=False)
         result = RunResult(status="error", label_a=sa.label, label_b=sb.label, target_a=sa.target,
                            target_b=sb.target, options=opts, errors=[exc.message], error_detail=exc.detail,
                            requested=models)
@@ -313,6 +309,12 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     except OSError as exc:
         return _fail("cannot write the report: %s" % exc)
 
+    out_term = ui.detect(sys.stdout, no_color=getattr(args, "no_color", False))
+    if result.status == "error" and out_term.interactive:
+        eprint("data-parity: work files: %s" % run_dir)
+        for ln in ui.card_lines(result, out_term, time.monotonic() - clock, str(report_path)):
+            sys.stdout.write(ln + "\n")
+        return 2
     if result.status == "error":
         eprint("data-parity: error: " + result.errors[0])
         for ln in result.error_detail:
@@ -322,6 +324,10 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         oprint("report: %s" % report_path)
         return 2
 
+    if out_term.interactive:
+        for ln in ui.card_lines(result, out_term, time.monotonic() - clock, str(report_path), _next_command(result, run_dir)):
+            sys.stdout.write(ln + "\n")
+        return result.exit_code
     for ln in terminal_summary(result):
         oprint(ln)
     oprint("")
@@ -390,11 +396,11 @@ def _conformance(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
 
 def _main(argv: List[str]) -> int:
     if not argv:
-        sys.stderr.write(TOP_HELP)
+        sys.stderr.write(helpview.render(ui.detect(sys.stderr)))
         return 2
     cmd, rest = argv[0], argv[1:]
     if cmd in ("help", "-h", "--help"):
-        sys.stdout.write(TOP_HELP)
+        sys.stdout.write(helpview.render(ui.detect(sys.stdout)))
         return 0
     if cmd in ("--version", "-V", "version"):
         oprint("data-parity %s" % __version__)
@@ -402,7 +408,9 @@ def _main(argv: List[str]) -> int:
     if cmd == "report":
         return _report(rest)
     if cmd not in ("run", "conformance"):
-        return _fail("unknown command %r (run | report | conformance | help)" % cmd)
+        close = suggest(cmd, ("run", "report", "conformance", "help"))
+        return _fail("unknown command %r (run | report | conformance | help)%s"
+                     % (cmd, ", did you mean %r?" % close if close else ""))
     parser = build_parser(cmd)
     # models and options may be interleaved (data-parity run orders --a x customers --b y)
     args = parser.parse_intermixed_args(rest) if cmd == "run" else parser.parse_args(rest)

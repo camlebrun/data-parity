@@ -1,0 +1,4 @@
+exit: 0
+--- stdout ---
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---

@@ -1,0 +1,10 @@
+exit: 1
+--- stdout ---
+DIFFERENT: the hash is NOT identical between ta and tb
+--- A
++++ B
+@@ -2 +2 @@
+-1|s=b|h1=3|h2=4
++1|s=b|h1=3|h2=999
+work files: <TMP>/out/run-<STAMP>
+--- stderr ---

@@ -1,0 +1,11 @@
+exit: 0
+--- stdout ---
+customers                ISO on the checked scope (last 2 partitions; 4 rows)
+events                   ISO on the checked scope (last 2 partitions; 6 rows)
+orders                   ISO on the checked scope (last 2 partitions; 6 rows)
+
+RESULT: ISO on the checked scope (last 2 partitions): all 3 models identical
+scope_limited: the verdict covers the checked scope only (last 2 partitions)
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---
+data-parity: pass 1 (one grouped scan per side)

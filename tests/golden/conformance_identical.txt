@@ -1,0 +1,4 @@
+exit: 0
+--- stdout ---
+IDENTICAL: the hash is portable between ta and tb (2 rows)
+--- stderr ---

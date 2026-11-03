@@ -1,0 +1,4 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+data-parity: error: unknown command 'nope' (run | report | conformance | help)

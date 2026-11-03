@@ -1,0 +1,10 @@
+exit: 2
+--- stdout ---
+RESULT: ERROR: no verdict (dbt failed on side B (target ghost, pass 1): dbt exited with code 2)
+report: <TMP>/out/run-<STAMP>/parity.md
+--- stderr ---
+data-parity: pass 1 (one grouped scan per side)
+data-parity: error: dbt failed on side B (target ghost, pass 1): dbt exited with code 2
+  --- last log lines, side B ---
+  Runtime Error: Could not find target 'ghost' in profiles.yml
+data-parity: work files: <TMP>/out/run-<STAMP>
